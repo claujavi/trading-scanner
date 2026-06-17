@@ -21,6 +21,23 @@ def _compute_start_datetime(timeframe: Timeframe, n_periods: int) -> datetime:
     return now - timedelta(minutes=max(n_periods * 5 * 2, 120))
 
 
+def _is_numeric_dtype(dtype: pl.DataType) -> bool:
+    numeric_dtypes = {
+        pl.Int8,
+        pl.Int16,
+        pl.Int32,
+        pl.Int64,
+        pl.UInt8,
+        pl.UInt16,
+        pl.UInt32,
+        pl.UInt64,
+        pl.Float16,
+        pl.Float32,
+        pl.Float64,
+    }
+    return dtype in numeric_dtypes
+
+
 def _normalize_dataframe(df: pl.DataFrame) -> pl.DataFrame:
     rename_map = {}
     if "datetime" in df.columns and "timestamp" not in df.columns:
@@ -34,13 +51,13 @@ def _normalize_dataframe(df: pl.DataFrame) -> pl.DataFrame:
     if "timestamp" not in df.columns:
         raise RuntimeError("El historial no contiene columna de tiempo 'timestamp' o 'datetime'.")
 
-    if pl.datatypes.is_numeric(df["timestamp"].dtype):
+    if _is_numeric_dtype(df["timestamp"].dtype):
         df = df.with_columns(
-            pl.col("timestamp").cast(pl.Int64).dt.from_timestamp("ms")
+            pl.col("timestamp").cast(pl.Int64).cast(pl.Datetime("ms"))
         )
     elif df["timestamp"].dtype == pl.Utf8:
         df = df.with_columns(
-            pl.col("timestamp").str.strptime(pl.Datetime, fmt="%Y-%m-%dT%H:%M:%S%z", strict=False)
+            pl.col("timestamp").str.strptime(pl.Datetime("ms"), fmt="%Y-%m-%dT%H:%M:%S%z", strict=False)
         )
 
     df = df.with_columns(

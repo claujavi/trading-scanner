@@ -22,6 +22,7 @@ dependencies = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+pythonpath = ["."]
 markers = [
     "unit: pruebas unitarias puras — sin red, sin archivos",
     "integration: requieren Schwab sandbox o Turso test",

@@ -93,6 +93,7 @@ class ScanConfig(BaseModel):
     relvol_umbral_swing_max: float = 3.0
     atr_pct_umbral_day: float = 3.0  # criterio 4: ATR% > X → day
     atr_pct_umbral_swing_min: float = 1.5  # criterio 4: ATR% entre X e Y → swing
+    atr_pct_umbral_swing_max: float = 3.0
 
     # ── Pesos de los 7 criterios ─────────────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
