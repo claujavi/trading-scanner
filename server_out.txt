@@ -7,3 +7,7 @@
            input\processed\sample_scan_20260618_131431.csv                     
 [10:14:32] Pipeline iniciado: 5 tickers                         pipeline.py:127
 [10:14:36] Pipeline completo: 5 ok                              pipeline.py:141
+INFO:     127.0.0.1:54274 - "GET / HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54277 - "GET /scan/latest HTTP/1.1" 200 OK
+INFO:     127.0.0.1:54279 - "GET /settings HTTP/1.1" 200 OK
+INFO:     127.0.0.1:56102 - "GET / HTTP/1.1" 200 OK
