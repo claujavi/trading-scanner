@@ -1,123 +1,152 @@
 """
-FastAPI application principal.
+FastAPI application principal — Trading Scanner.
 
 Lifespan:
-- Inicializa las tablas en Turso al arrancar
-- Limpia recursos al apagar
+  - Startup: inicializa Turso, monta static/templates, arranca CSV watcher
+  - Shutdown: detiene watcher
 
-Routers:
-- /scan - endpoints de scanning
-- /ticker - detalle de tickers
-- /config - configuración
-- /backtest - backtesting
-- / - status
+Rutas:
+  GET /           → dashboard HTML
+  GET /scan/*     → api/scan.py
+  GET /settings   → api/settings.py
+  GET /health     → health check JSON
 """
 
+import asyncio
+import json
 from contextlib import asynccontextmanager
+from datetime import date
 from pathlib import Path
 
-from fastapi import FastAPI, HTTPException
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Request
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
 
+from rich.console import Console
+
+from .api.scan import router as scan_router
+from .api.settings import router as settings_router
 from .config import settings
 from .database import db
+from .ingest.csv_parser import parse_csv
 from .ingest.csv_watcher import CSVWatcher
+from .models import ScanConfig
+
+console = Console()
+
+_PROJECT_ROOT = Path(__file__).parent.parent.parent
+_TEMPLATES_DIR = _PROJECT_ROOT / "templates"
+_STATIC_DIR = _PROJECT_ROOT / "static"
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Context manager para el lifespan de la app.
-
-    Startup: Inicializa el schema de Turso
-    Shutdown: Limpia recursos
-    """
-    # ─── STARTUP ────────────────────────────────────────────────────────────
+    # ── Turso ──────────────────────────────────────────────────────────────
     try:
         await db.initialize_schema()
-        print("✓ Schema de Turso inicializado correctamente")
-    except Exception as e:
-        print(f"⚠ Error inicializando schema de Turso: {e}")
-        print("  El sistema continuará, pero algunas operaciones pueden fallar")
+        console.log("[green]Schema Turso inicializado[/green]")
+    except Exception as exc:
+        console.log(f"[yellow]Turso no disponible: {exc} — continuando sin persistencia[/yellow]")
 
-    csv_watcher = CSVWatcher(Path(settings.input_folder))
+    # ── Templates y static ────────────────────────────────────────────────
+    _TEMPLATES_DIR.mkdir(exist_ok=True)
+    _STATIC_DIR.mkdir(exist_ok=True)
+
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    app.state.templates = templates
+    app.state.settings = settings
+    app.state.latest_results = []
+
+    # ── CSV Watcher con pipeline callback ─────────────────────────────────
+    loop = asyncio.get_event_loop()
+    config = ScanConfig()
+
+    async def _pipeline_callback(tickers):
+        from .pipeline import run_pipeline
+        results = await run_pipeline(tickers, config)
+        app.state.latest_results = results
+
+    csv_watcher = CSVWatcher(
+        Path(settings.input_folder),
+        pipeline_callback=_pipeline_callback,
+        loop=loop,
+    )
     csv_watcher.start()
     app.state.csv_watcher = csv_watcher
 
+    console.log(f"[green]Trading Scanner en http://localhost:{settings.scanner_port}[/green]")
+    if settings.mock_schwab:
+        console.log("[yellow]MOCK_SCHWAB=true — datos sinteticos activos[/yellow]")
+
     yield
 
-    # ─── SHUTDOWN ─────────────────────────────────────────────────────────────────
+    # ── Shutdown ──────────────────────────────────────────────────────────
     watcher = getattr(app.state, "csv_watcher", None)
-    if watcher is not None:
+    if watcher:
         watcher.stop()
-    print("✓ Sistema apagado correctamente")
+    console.log("[green]Sistema apagado[/green]")
 
-
-# ════════════════════════════════════════════════════════════════════════════
-# FastAPI App
-# ════════════════════════════════════════════════════════════════════════════
 
 app = FastAPI(
     title="Trading Scanner",
-    description="Sistema de scanning diario de acciones del mercado estadounidense",
+    description="Sistema de scanning diario de acciones NYSE/NASDAQ",
     version="0.1.0",
     lifespan=lifespan,
 )
 
+# Static files
+_STATIC_DIR.mkdir(exist_ok=True)
+app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 
-# ════════════════════════════════════════════════════════════════════════════
-# Health Check
-# ════════════════════════════════════════════════════════════════════════════
+# Routers
+app.include_router(scan_router)
+app.include_router(settings_router)
 
 
-@app.get("/", tags=["Health"])
-async def health() -> dict:
-    """Status del sistema."""
+# ── Dashboard ─────────────────────────────────────────────────────────────
+
+@app.get("/", response_class=HTMLResponse)
+async def dashboard(request: Request):
+    from .database import db
+
+    try:
+        rows = await db.get_scan_results_by_date(date.today().isoformat())
+    except Exception:
+        rows = []
+    for r in rows:
+        raw = r.get("criterios_incompletos", "[]")
+        try:
+            r["criterios_incompletos"] = json.loads(raw) if isinstance(raw, str) else raw
+        except Exception:
+            r["criterios_incompletos"] = []
+    rows.sort(key=lambda r: r.get("confianza", 0.0), reverse=True)
+
+    return request.app.state.templates.TemplateResponse(
+        request=request,
+        name="dashboard.html",
+        context={
+            "results": rows,
+            "today": date.today().isoformat(),
+            "mock_schwab": settings.mock_schwab,
+            "scanner_port": settings.scanner_port,
+        },
+    )
+
+
+# ── Health ─────────────────────────────────────────────────────────────────
+
+@app.get("/health", tags=["Health"])
+async def health():
     return {
         "status": "ok",
         "service": "trading-scanner",
         "version": "0.1.0",
-        "port": settings.scanner_port,
-    }
-
-
-@app.get("/health", tags=["Health"])
-async def health_detailed() -> dict:
-    """Health check detallado."""
-    return {
-        "status": "ok",
+        "mock_schwab": settings.mock_schwab,
         "turso_configured": bool(settings.turso_database_url),
         "schwab_configured": bool(settings.schwab_app_key),
         "calendar_url": settings.calendar_base_url,
     }
-
-
-# ════════════════════════════════════════════════════════════════════════════
-# Placeholder Routers (se implementarán en sprints posteriores)
-# ════════════════════════════════════════════════════════════════════════════
-
-
-@app.get("/scan/latest", tags=["Scan"])
-async def get_latest_scan() -> dict:
-    """Obtiene el último scan del día."""
-    return {"message": "Endpoint en desarrollo"}
-
-
-@app.post("/scan/upload", tags=["Scan"])
-async def upload_csv() -> dict:
-    """Recibe un CSV de ToS."""
-    return {"message": "Endpoint en desarrollo"}
-
-
-@app.get("/config", tags=["Config"])
-async def get_config() -> dict:
-    """Obtiene la configuración actual."""
-    return {"message": "Endpoint en desarrollo"}
-
-
-@app.post("/config", tags=["Config"])
-async def update_config() -> dict:
-    """Actualiza la configuración."""
-    return {"message": "Endpoint en desarrollo"}
 
 
 if __name__ == "__main__":

@@ -26,6 +26,7 @@ def _find_value(data: Any, keys: Iterable[str]) -> Optional[float]:
 def get_ivr(ticker: str) -> Optional[float]:
     client = get_client()
     if client is None:
+        console.log(f"[yellow]IVR {ticker}: cliente Schwab no disponible — criterio omitido[/yellow]")
         return None
 
     try:

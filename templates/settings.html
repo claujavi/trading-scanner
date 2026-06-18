@@ -1,0 +1,150 @@
+{% extends "base.html" %}
+{% block title %}Configuración — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:680px;">
+
+  {# ── Estado de servicios ── #}
+  <div class="card">
+    <div class="card-title">Estado de servicios</div>
+    <div style="display:flex;flex-direction:column;gap:12px;">
+
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <strong>Turso (base de datos)</strong>
+          <div style="font-size:12px;color:var(--text-muted);">{{ turso_url_masked }}</div>
+        </div>
+        <div>
+          {% if turso_ok %}
+            <span class="status-dot dot-ok"></span>
+            <span style="color:var(--green);font-size:13px;">Conectado</span>
+          {% else %}
+            <span class="status-dot dot-err"></span>
+            <span style="color:var(--red);font-size:13px;">Sin conexión</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <strong>Trading Calendar</strong>
+          <div style="font-size:12px;color:var(--text-muted);">{{ calendar_url }}</div>
+        </div>
+        <div>
+          {% if calendar_ok %}
+            <span class="status-dot dot-ok"></span>
+            <span style="color:var(--green);font-size:13px;">Conectado</span>
+          {% else %}
+            <span class="status-dot dot-err"></span>
+            <span style="color:var(--red);font-size:13px;">Sin conexión</span>
+          {% endif %}
+        </div>
+      </div>
+
+      <div style="display:flex;align-items:center;justify-content:space-between;">
+        <div>
+          <strong>Schwab API</strong>
+          <div style="font-size:12px;color:var(--text-muted);">
+            {% if mock_schwab %}Modo mock activo{% else %}{{ schwab_key_masked }}{% endif %}
+          </div>
+        </div>
+        <div>
+          {% if mock_schwab %}
+            <span class="status-dot dot-warn"></span>
+            <span style="color:var(--yellow);font-size:13px;">Mock</span>
+          {% elif schwab_configured %}
+            <span class="status-dot dot-ok"></span>
+            <span style="color:var(--green);font-size:13px;">Configurado</span>
+          {% else %}
+            <span class="status-dot dot-err"></span>
+            <span style="color:var(--red);font-size:13px;">Sin credenciales</span>
+          {% endif %}
+        </div>
+      </div>
+
+    </div>
+  </div>
+
+  {# ── Formulario de credenciales ── #}
+  <div class="card">
+    <div class="card-title">Credenciales</div>
+    <form action="/settings" method="post">
+
+      <div class="form-group">
+        <label>Turso Database URL</label>
+        <input type="text" name="turso_database_url"
+               placeholder="{{ turso_url_masked }}"
+               autocomplete="off" />
+        <div class="form-hint">Formato: libsql://[nombre].turso.io</div>
+      </div>
+
+      <div class="form-group">
+        <label>Turso Auth Token</label>
+        <input type="password" name="turso_auth_token"
+               placeholder="{{ turso_token_masked }}"
+               autocomplete="off" />
+      </div>
+
+      <div class="form-group">
+        <label>Schwab App Key</label>
+        <input type="text" name="schwab_app_key"
+               placeholder="{{ schwab_key_masked }}"
+               autocomplete="off" />
+      </div>
+
+      <div class="form-group">
+        <label>Schwab App Secret</label>
+        <input type="password" name="schwab_app_secret"
+               placeholder="{{ schwab_secret_masked }}"
+               autocomplete="off" />
+      </div>
+
+      <div class="form-group">
+        <label>Trading Calendar URL</label>
+        <input type="text" name="calendar_base_url"
+               value="{{ calendar_url }}" />
+        <div class="form-hint">Default: http://localhost:8000</div>
+      </div>
+
+      <div style="display:flex;align-items:center;gap:12px;margin-top:20px;">
+        <button type="submit" class="btn btn-primary">Guardar</button>
+        <span style="font-size:12px;color:var(--text-muted);">
+          Los cambios requieren reiniciar el servidor para tomar efecto.
+        </span>
+      </div>
+
+    </form>
+  </div>
+
+  {# ── Info de puertos ── #}
+  <div class="card">
+    <div class="card-title">Configuración actual</div>
+    <table style="width:auto;">
+      <tbody>
+        <tr>
+          <td style="padding:4px 12px 4px 0;color:var(--text-muted);font-size:12px;">Puerto scanner</td>
+          <td class="mono">{{ scanner_port }}</td>
+        </tr>
+        <tr>
+          <td style="padding:4px 12px 4px 0;color:var(--text-muted);font-size:12px;">Modo Schwab</td>
+          <td>{% if mock_schwab %}<span class="badge badge-yellow">MOCK</span>{% else %}<span class="badge badge-green">REAL</span>{% endif %}</td>
+        </tr>
+      </tbody>
+    </table>
+    <p style="font-size:12px;color:var(--text-muted);margin-top:12px;">
+      Para activar el modo mock sin Schwab: <code style="background:var(--bg3);padding:1px 6px;border-radius:3px;">MOCK_SCHWAB=true</code> en el .env o como variable de entorno.
+    </p>
+  </div>
+
+</div>
+
+{% if request.query_params.get("saved") %}
+<div style="position:fixed;bottom:24px;right:24px;background:#166534;color:#bbf7d0;
+            padding:12px 20px;border-radius:var(--radius);font-size:13px;font-weight:600;
+            box-shadow:0 4px 20px rgba(0,0,0,.4);">
+  ✓ Configuración guardada en .env
+</div>
+<script>setTimeout(()=>document.querySelector('[style*="position:fixed"]').remove(), 4000)</script>
+{% endif %}
+
+{% endblock %}

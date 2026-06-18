@@ -24,6 +24,36 @@ nunca debe editar archivos manualmente.
 
 ---
 
+## COMANDOS COMUNES
+
+```bash
+# Instalar dependencias
+uv sync
+
+# Arrancar el servidor (puerto 8001)
+uv run uvicorn trading_scanner.main:app --host 0.0.0.0 --port 8001 --reload
+
+# Correr todos los tests unitarios
+uv run pytest tests/unit/ -v
+
+# Correr un test específico
+uv run pytest tests/unit/test_evaluator.py::test_pesos_afectan_score -v
+
+# Correr solo tests que no requieren red
+uv run pytest tests/unit/ -v -m "not integration and not slow"
+
+# Modo mock sin Schwab ni Calendar (para desarrollo local)
+MOCK_SCHWAB=true uv run uvicorn trading_scanner.main:app --host 0.0.0.0 --port 8001 --reload
+```
+
+### Notas de ejecución
+- Los tests usan `pythonpath = ["."]` (ver `pyproject.toml`). Importar como `src.trading_scanner.X`.
+- Con `MOCK_SCHWAB=true` el sistema genera OHLCV sintético reproducible (seeded por ticker) sin necesitar token Schwab ni Calendar corriendo.
+- El token Schwab vive en `%APPDATA%/trading-scanner/schwab_token.json`, no en el repo.
+- `backtest_data/` puede pesar varios GB — está en `.gitignore`.
+
+---
+
 ## ESTADO ACTUAL DEL PROYECTO
 
 ```

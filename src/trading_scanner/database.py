@@ -31,66 +31,73 @@ class TursoClient:
         }
 
     async def _execute(self, sql: str, params: Optional[list[Any]] = None) -> list[dict]:
-        """Ejecuta una query individual y retorna los resultados.
+        """Ejecuta una query individual.
 
-        Args:
-            sql: Instrucción SQL
-            params: Parámetros posicionales para la query
-
-        Returns:
-            Lista de dicts con los resultados
+        Retorna lista vacía si Turso no está disponible — nunca lanza para el
+        flujo normal de la app (solo propaga en initialize_schema).
         """
-        async with httpx.AsyncClient() as client:
-            payload = {"statements": [{"sql": sql, "args": params or []}]}
+        if not self.base_url or not self.auth_token:
+            return []
+        async with httpx.AsyncClient(timeout=5.0) as client:
+            payload = {"requests": [
+                {"type": "execute", "stmt": {"sql": sql, "args": [
+                    {"type": "text", "value": str(p)} if p is not None else {"type": "null"}
+                    for p in (params or [])
+                ]}},
+                {"type": "close"},
+            ]}
             resp = await client.post(
-                f"{self.base_url}/v2/turso/execute",
+                f"{self.base_url}/v2/pipeline",
                 headers=self.headers,
                 json=payload,
             )
             resp.raise_for_status()
             data = resp.json()
 
-            # Parsear la respuesta de Turso v2
-            if "results" in data and len(data["results"]) > 0:
-                result = data["results"][0]
-                if "rows" in result:
-                    return [dict(zip([col["name"] for col in result["columns"]], row))
-                            for row in result["rows"]]
+            # Turso pipeline response: {"results": [{"type":"ok","response":{"type":"execute","result":{...}}}]}
+            if "results" in data and data["results"]:
+                first = data["results"][0]
+                if first.get("type") == "ok":
+                    result_data = first.get("response", {}).get("result", {})
+                    cols = [c["name"] for c in result_data.get("cols", [])]
+                    rows = result_data.get("rows", [])
+                    return [
+                        dict(zip(cols, [cell.get("value") for cell in row]))
+                        for row in rows
+                    ]
             return []
 
     async def _batch(self, statements: list[tuple[str, Optional[list]]]) -> list[list[dict]]:
-        """Ejecuta múltiples queries en un batch.
+        """Ejecuta múltiples queries en un pipeline batch de Turso v2."""
+        if not self.base_url or not self.auth_token:
+            return [[] for _ in statements]
+        requests = []
+        for sql, params in statements:
+            requests.append({"type": "execute", "stmt": {"sql": sql, "args": [
+                {"type": "text", "value": str(p)} if p is not None else {"type": "null"}
+                for p in (params or [])
+            ]}})
+        requests.append({"type": "close"})
 
-        Args:
-            statements: Lista de (sql, params) tuples
-
-        Returns:
-            Lista de listas de dicts, uno por query
-        """
-        async with httpx.AsyncClient() as client:
-            payload = {
-                "statements": [
-                    {"sql": sql, "args": params or []} for sql, params in statements
-                ]
-            }
+        async with httpx.AsyncClient(timeout=10.0) as client:
             resp = await client.post(
-                f"{self.base_url}/v2/turso/execute",
+                f"{self.base_url}/v2/pipeline",
                 headers=self.headers,
-                json=payload,
+                json={"requests": requests},
             )
             resp.raise_for_status()
             data = resp.json()
 
-            # Parsear múltiples resultados
             results = []
-            if "results" in data:
-                for result in data["results"]:
-                    if "rows" in result:
-                        rows = [dict(zip([col["name"] for col in result["columns"]], row))
-                                for row in result["rows"]]
-                    else:
-                        rows = []
-                    results.append(rows)
+            for item in data.get("results", []):
+                if item.get("type") == "ok":
+                    result_data = item.get("response", {}).get("result", {})
+                    cols = [c["name"] for c in result_data.get("cols", [])]
+                    rows = result_data.get("rows", [])
+                    results.append([
+                        dict(zip(cols, [cell.get("value") for cell in row]))
+                        for row in rows
+                    ])
             return results
 
     async def initialize_schema(self) -> None:
@@ -107,8 +114,8 @@ class TursoClient:
     # SCAN RESULTS
     # ────────────────────────────────────────────────────────────────────────
 
-    async def insert_scan_result(self, result: "ScanResultRow") -> int:
-        """Inserta un resultado de scan. Retorna el ID."""
+    async def insert_scan_result(self, result: "ScanResult") -> int:
+        """Inserta un ScanResult en Turso. Retorna el ID generado."""
         sql = """
         INSERT INTO scan_results (
             ticker, fecha, timestamp, fuente, config_snapshot,
@@ -126,12 +133,58 @@ class TursoClient:
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?
         )
         """
-        params = result.to_list()
+        params = [
+            result.ticker,
+            result.fecha.isoformat(),
+            result.timestamp.isoformat(),
+            result.fuente.value,
+            json.dumps(result.config_snapshot, default=str),
+            result.config_version,
+            result.evaluator_version,
+            result.vix_apertura,
+            result.spy_sobre_sma200,
+            result.futuros_es_gap_pct,
+            int(result.calendar_disponible),
+            result.precio,
+            result.variacion_diaria_pct,
+            result.relvol,
+            result.atr_pct,
+            result.volumen_actual,
+            result.sobre_sma200,
+            result.sobre_ema50,
+            result.cruce_ema_921_5m,
+            result.cruce_ema_921_15m,
+            result.cruce_ema_921_4h,
+            result.cruce_ema_921_d,
+            result.rsi_14_5m,
+            result.rsi_14_d,
+            result.macd_cruce_alcista_15m,
+            result.macd_cruce_alcista_d,
+            result.ivr,
+            result.ivr_señal_day,
+            result.ivr_señal_swing,
+            result.warning_calendar,
+            int(result.earnings_24h),
+            int(result.evento_macro_24h),
+            int(result.filing_8k_24h),
+            int(result.upgrade_downgrade_24h),
+            int(result.catalizador_detectado),
+            result.score_day,
+            result.score_swing,
+            result.score_max_posible,
+            result.clasificacion.value,
+            result.confianza,
+            json.dumps(result.criterios_incompletos),
+            result.stop_loss_sugerido,
+            result.target_sugerido,
+            result.rr_calculado,
+            result.created_at.isoformat(),
+            result.updated_at.isoformat(),
+        ]
         await self._execute(sql, params)
-        # Retornar el último ID insertado
         rows = await self._execute("SELECT last_insert_rowid() as id")
         return rows[0]["id"] if rows else 0
 
@@ -144,6 +197,13 @@ class TursoClient:
         """Obtiene los resultados más recientes."""
         sql = "SELECT * FROM scan_results ORDER BY timestamp DESC LIMIT ?"
         return await self._execute(sql, [limit])
+
+    async def get_scan_results_last_days(self, days: int = 30) -> list[dict]:
+        """Obtiene resultados de los últimos N días, agrupables por fecha."""
+        from datetime import date, timedelta
+        cutoff = (date.today() - timedelta(days=days)).isoformat()
+        sql = "SELECT * FROM scan_results WHERE fecha >= ? ORDER BY fecha DESC, confianza DESC"
+        return await self._execute(sql, [cutoff])
 
     # ────────────────────────────────────────────────────────────────────────
     # SCAN CONFIGS

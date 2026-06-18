@@ -1,0 +1,9 @@
+[10:14:26] Schema Turso inicializado                                 main.py:48
+[10:14:26] CSV watcher iniciado en input                     csv_watcher.py:113
+           Trading Scanner en http://localhost:8001                  main.py:78
+           MOCK_SCHWAB=true — datos sinteticos activos               main.py:80
+[10:14:31] CSV procesado: sample_scan.csv -> 5 tickers        csv_watcher.py:64
+           CSV movido a:                                      csv_watcher.py:77
+           input\processed\sample_scan_20260618_131431.csv                     
+[10:14:32] Pipeline iniciado: 5 tickers                         pipeline.py:127
+[10:14:36] Pipeline completo: 5 ok                              pipeline.py:141

@@ -5,6 +5,8 @@ Variables de entorno via Pydantic Settings.
 Nunca hardcodear valores - siempre vienen de .env o de la variable de entorno.
 """
 
+from pathlib import Path
+
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +34,12 @@ class Settings(BaseSettings):
 
     # Carpeta de input para CSV de ToS
     input_folder: str = "./input"
+
+    # Cache local de datos históricos para backtesting
+    backtest_data_path: Path = Path("./backtest_data")
+
+    # Modo mock: genera datos OHLCV sintéticos sin necesitar Schwab
+    mock_schwab: bool = False
 
 
 # Instancia singleton - se importa en toda la app

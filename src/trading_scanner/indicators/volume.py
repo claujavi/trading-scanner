@@ -39,7 +39,7 @@ def calc_atr_pct(df: pl.DataFrame, periodo: int = 14) -> pl.Series:
     return pl.Series(atr_pct.values)
 
 
-def calc_relvol(df: pl.DataFrame, periodo: int = 50) -> float:
+def calc_relvol(df: pl.DataFrame, periodo: int) -> float:
     pdf = _to_pandas(df)
     if "volume" not in pdf.columns or len(pdf) == 0:
         return 0.0

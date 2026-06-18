@@ -1,0 +1,82 @@
+{% if results %}
+<table>
+  <thead>
+    <tr>
+      <th>Ticker</th>
+      <th>Precio</th>
+      <th>Cambio %</th>
+      <th>Score DAY</th>
+      <th>Score SWING</th>
+      <th>Clasificación</th>
+      <th>Confianza</th>
+      <th>Warning</th>
+      <th>Criterios faltantes</th>
+    </tr>
+  </thead>
+  <tbody>
+    {% for r in results %}
+    {% set cls = r.clasificacion | lower %}
+    {% set warn = (r.warning_calendar or "none") | lower %}
+    <tr>
+      <td><span class="ticker-sym">{{ r.ticker }}</span></td>
+      <td class="mono">${{ "%.2f"|format(r.precio) }}</td>
+      <td class="mono {% if r.variacion_diaria_pct >= 0 %}change-pos{% else %}change-neg{% endif %}">
+        {% if r.variacion_diaria_pct >= 0 %}+{% endif %}{{ "%.2f"|format(r.variacion_diaria_pct) }}%
+      </td>
+      <td>
+        <div class="score-bar-wrap">
+          <span class="score-val mono">{{ "%.2f"|format(r.score_day) }}</span>
+          <div class="score-bar">
+            <div class="score-bar-fill fill-day"
+                 style="width:{{ [((r.score_day / r.score_max_posible * 100) if r.score_max_posible > 0 else 0), 100] | min | int }}%">
+            </div>
+          </div>
+        </div>
+      </td>
+      <td>
+        <div class="score-bar-wrap">
+          <span class="score-val mono">{{ "%.2f"|format(r.score_swing) }}</span>
+          <div class="score-bar">
+            <div class="score-bar-fill fill-swing"
+                 style="width:{{ [((r.score_swing / r.score_max_posible * 100) if r.score_max_posible > 0 else 0), 100] | min | int }}%">
+            </div>
+          </div>
+        </div>
+      </td>
+      <td>
+        <span class="badge badge-{{ cls }}">{{ r.clasificacion }}</span>
+      </td>
+      <td>
+        <div class="score-bar-wrap">
+          <span class="score-val mono">{{ "%.0f"|format(r.confianza * 100) }}%</span>
+          <div class="score-bar">
+            <div class="score-bar-fill fill-conf"
+                 style="width:{{ (r.confianza * 100) | int }}%">
+            </div>
+          </div>
+        </div>
+      </td>
+      <td>
+        {% if r.warning_calendar %}
+          <span class="badge badge-{{ warn }}">{{ r.warning_calendar }}</span>
+        {% else %}
+          <span class="badge badge-none">—</span>
+        {% endif %}
+      </td>
+      <td>
+        {% if r.criterios_incompletos %}
+          <span class="criterios-list">{{ r.criterios_incompletos | join(", ") }}</span>
+        {% else %}
+          <span style="color:var(--text-muted)">—</span>
+        {% endif %}
+      </td>
+    </tr>
+    {% endfor %}
+  </tbody>
+</table>
+{% else %}
+<div class="empty-state">
+  <h3>Sin resultados para hoy</h3>
+  <p>Exportá un CSV desde ThinkOrSwim o usá el botón de carga manual.</p>
+</div>
+{% endif %}

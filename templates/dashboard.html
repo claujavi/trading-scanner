@@ -1,0 +1,98 @@
+{% extends "base.html" %}
+{% block title %}Dashboard — Trading Scanner{% endblock %}
+{% block content %}
+
+{# ── Banner MOCK — visible e imposible de ignorar ── #}
+{% if mock_schwab %}
+<div style="
+  background: #451a03;
+  border: 2px solid #f97316;
+  border-radius: 6px;
+  padding: 14px 20px;
+  margin-bottom: 20px;
+  display: flex;
+  align-items: center;
+  gap: 14px;
+">
+  <span style="font-size: 22px; line-height: 1;">&#9888;</span>
+  <div>
+    <strong style="color: #fb923c; font-size: 14px;">MODO MOCK ACTIVO — DATOS SINT&#201;TICOS</strong>
+    <div style="color: #fed7aa; font-size: 12px; margin-top: 3px;">
+      Los scores, clasificaciones y se&#241;ales son generados artificialmente.
+      <strong>No operar con esta informaci&#243;n.</strong>
+      Para activar datos reales: apagar el servidor, quitar <code style="background:#7c2d12;padding:1px 5px;border-radius:3px;">MOCK_SCHWAB=true</code> del entorno, y reiniciar.
+    </div>
+  </div>
+</div>
+{% endif %}
+
+{# ── Stats row ── #}
+{% set day_count    = results | selectattr("clasificacion", "equalto", "DAY")      | list | length %}
+{% set swing_count  = results | selectattr("clasificacion", "equalto", "SWING")    | list | length %}
+{% set amb_count    = results | selectattr("clasificacion", "equalto", "AMBIGUO")  | list | length %}
+{% set disc_count   = results | selectattr("clasificacion", "equalto", "DESCARTAR")| list | length %}
+
+<div class="stats-grid">
+  <div class="stat-box">
+    <div class="stat-label">Total</div>
+    <div class="stat-value">{{ results | length }}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">DAY</div>
+    <div class="stat-value stat-day">{{ day_count }}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">SWING</div>
+    <div class="stat-value stat-swing">{{ swing_count }}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">AMBIGUO</div>
+    <div class="stat-value stat-amb">{{ amb_count }}</div>
+  </div>
+  <div class="stat-box">
+    <div class="stat-label">DESCARTAR</div>
+    <div class="stat-value stat-disc">{{ disc_count }}</div>
+  </div>
+</div>
+
+{# ── Header y upload ── #}
+<div class="card" style="padding:16px 20px;">
+  <div class="section-header" style="margin-bottom:0;">
+    <div>
+      <span class="section-title">Candidatos del día</span>
+      <span style="color:var(--text-muted); font-size:12px; margin-left:12px;">{{ today }}</span>
+    </div>
+    <div style="display:flex;align-items:center;gap:12px;">
+      <span class="htmx-indicator" id="spinner"><span class="spinner"></span></span>
+      <form action="/scan/upload" method="post" enctype="multipart/form-data"
+            style="display:inline-flex;align-items:center;gap:8px;">
+        <label for="csv-upload" class="btn btn-secondary" style="cursor:pointer;font-size:12px;">
+          ↑ Cargar CSV
+        </label>
+        <input id="csv-upload" type="file" name="file" accept=".csv"
+               style="display:none" onchange="this.form.submit()">
+      </form>
+      <button class="btn btn-secondary" style="font-size:12px;"
+              hx-get="/scan/partial"
+              hx-target="#scan-results"
+              hx-swap="innerHTML"
+              hx-indicator="#spinner">
+        ↻ Actualizar
+      </button>
+    </div>
+  </div>
+</div>
+
+{# ── Tabla con polling HTMX ── #}
+<div class="card" style="padding:0; overflow:hidden;">
+  <div id="scan-results"
+       hx-get="/scan/partial"
+       hx-trigger="every 30s"
+       hx-target="#scan-results"
+       hx-swap="innerHTML"
+       hx-indicator="#spinner">
+    {% include "partials/scan_table.html" %}
+  </div>
+</div>
+
+{% endblock %}

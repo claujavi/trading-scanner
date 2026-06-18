@@ -1,0 +1,12 @@
+[10:00:55] Turso no disponible: Client error '404 Not Found' for url main.py:50
+           'https://tradingscanner-cjplatas.aws-us-east-1.turso.io/v           
+           2/turso/execute'                                                    
+           For more information check:                                         
+           https://developer.mozilla.org/en-US/docs/Web/HTTP/Status/           
+           404 — continuando sin persistencia                                  
+[10:00:55] CSV watcher iniciado en input                     csv_watcher.py:113
+           Trading Scanner en http://localhost:8001                  main.py:78
+           MOCK_SCHWAB=true — datos sinteticos activos               main.py:80
+INFO:     127.0.0.1:57034 - "GET /health HTTP/1.1" 200 OK
+INFO:     127.0.0.1:57035 - "GET / HTTP/1.1" 500 Internal Server Error
+INFO:     127.0.0.1:57037 - "GET / HTTP/1.1" 500 Internal Server Error

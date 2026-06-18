@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="es">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>{% block title %}Trading Scanner{% endblock %}</title>
+  <script src="/static/htmx.min.js"></script>
+  <style>
+    *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
+
+    :root {
+      --bg:        #0f172a;
+      --bg2:       #1e293b;
+      --bg3:       #334155;
+      --border:    #475569;
+      --text:      #f1f5f9;
+      --text-muted:#94a3b8;
+      --accent:    #38bdf8;
+      --day:       #3b82f6;
+      --swing:     #22c55e;
+      --ambiguo:   #eab308;
+      --descartar: #64748b;
+      --red:       #ef4444;
+      --yellow:    #eab308;
+      --green:     #22c55e;
+      --radius:    6px;
+      --font:      'Segoe UI', system-ui, sans-serif;
+    }
+
+    body {
+      background: var(--bg);
+      color: var(--text);
+      font-family: var(--font);
+      font-size: 14px;
+      min-height: 100vh;
+      display: flex;
+      flex-direction: column;
+    }
+
+    /* ── Nav ── */
+    nav {
+      background: var(--bg2);
+      border-bottom: 1px solid var(--border);
+      padding: 0 24px;
+      display: flex;
+      align-items: center;
+      gap: 32px;
+      height: 52px;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
+    .nav-brand {
+      font-weight: 700;
+      font-size: 15px;
+      color: var(--accent);
+      letter-spacing: .5px;
+      text-decoration: none;
+    }
+    .nav-links { display: flex; gap: 4px; }
+    .nav-links a {
+      color: var(--text-muted);
+      text-decoration: none;
+      padding: 6px 12px;
+      border-radius: var(--radius);
+      transition: background .15s, color .15s;
+      font-size: 13px;
+    }
+    .nav-links a:hover, .nav-links a.active {
+      background: var(--bg3);
+      color: var(--text);
+    }
+    .nav-right { margin-left: auto; display: flex; align-items: center; gap: 12px; }
+    .nav-badge {
+      font-size: 11px;
+      padding: 2px 8px;
+      border-radius: 999px;
+      font-weight: 600;
+    }
+    .badge-mock { background: #78350f; color: #fcd34d; }
+
+    /* ── Layout ── */
+    main { padding: 24px; flex: 1; max-width: 1400px; width: 100%; margin: 0 auto; }
+
+    /* ── Cards ── */
+    .card {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 20px;
+      margin-bottom: 20px;
+    }
+    .card-title {
+      font-size: 13px;
+      font-weight: 600;
+      color: var(--text-muted);
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      margin-bottom: 16px;
+    }
+
+    /* ── Tablas ── */
+    table { width: 100%; border-collapse: collapse; }
+    thead th {
+      background: var(--bg3);
+      color: var(--text-muted);
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: .5px;
+      padding: 8px 12px;
+      text-align: left;
+      position: sticky;
+      top: 52px;
+    }
+    tbody tr {
+      border-bottom: 1px solid var(--bg3);
+      transition: background .1s;
+    }
+    tbody tr:hover { background: var(--bg3); }
+    tbody td { padding: 10px 12px; vertical-align: middle; }
+    .ticker-sym { font-weight: 700; font-size: 15px; letter-spacing: .5px; }
+    .mono { font-family: 'Consolas', 'Cascadia Code', monospace; }
+
+    /* ── Badges ── */
+    .badge {
+      display: inline-block;
+      padding: 2px 10px;
+      border-radius: 999px;
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: .3px;
+    }
+    .badge-day     { background: #1d4ed8; color: #bfdbfe; }
+    .badge-swing   { background: #166534; color: #bbf7d0; }
+    .badge-ambiguo { background: #854d0e; color: #fef08a; }
+    .badge-descartar { background: #1e293b; color: #94a3b8; border: 1px solid var(--border); }
+    .badge-green   { background: #14532d; color: #86efac; }
+    .badge-yellow  { background: #713f12; color: #fde68a; }
+    .badge-red     { background: #7f1d1d; color: #fca5a5; }
+    .badge-none    { background: var(--bg3); color: var(--text-muted); }
+
+    /* ── Score bars ── */
+    .score-bar-wrap { display: flex; align-items: center; gap: 6px; min-width: 90px; }
+    .score-val { font-variant-numeric: tabular-nums; min-width: 32px; }
+    .score-bar {
+      flex: 1;
+      height: 4px;
+      background: var(--bg3);
+      border-radius: 2px;
+      overflow: hidden;
+    }
+    .score-bar-fill { height: 100%; border-radius: 2px; }
+    .fill-day   { background: var(--day); }
+    .fill-swing { background: var(--swing); }
+    .fill-conf  { background: var(--accent); }
+
+    /* ── Stats row ── */
+    .stats-grid {
+      display: flex;
+      gap: 12px;
+      margin-bottom: 20px;
+      flex-wrap: wrap;
+    }
+    .stat-box {
+      background: var(--bg2);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      padding: 12px 18px;
+      min-width: 90px;
+    }
+    .stat-label { font-size: 11px; color: var(--text-muted); text-transform: uppercase; letter-spacing: .5px; }
+    .stat-value { font-size: 22px; font-weight: 700; margin-top: 2px; }
+    .stat-day   { color: var(--day); }
+    .stat-swing { color: var(--swing); }
+    .stat-amb   { color: var(--ambiguo); }
+    .stat-disc  { color: var(--descartar); }
+
+    /* ── Forms ── */
+    .form-group { margin-bottom: 16px; }
+    .form-group label {
+      display: block;
+      font-size: 12px;
+      font-weight: 600;
+      color: var(--text-muted);
+      margin-bottom: 6px;
+      text-transform: uppercase;
+      letter-spacing: .3px;
+    }
+    .form-group input {
+      width: 100%;
+      background: var(--bg3);
+      border: 1px solid var(--border);
+      border-radius: var(--radius);
+      color: var(--text);
+      padding: 8px 12px;
+      font-size: 13px;
+      font-family: 'Consolas', monospace;
+    }
+    .form-group input:focus {
+      outline: none;
+      border-color: var(--accent);
+    }
+    .form-hint { font-size: 11px; color: var(--text-muted); margin-top: 4px; }
+
+    /* ── Buttons ── */
+    .btn {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      padding: 8px 18px;
+      border-radius: var(--radius);
+      font-size: 13px;
+      font-weight: 600;
+      cursor: pointer;
+      border: none;
+      transition: opacity .15s;
+    }
+    .btn:hover { opacity: .85; }
+    .btn-primary { background: var(--accent); color: #0f172a; }
+    .btn-secondary { background: var(--bg3); color: var(--text); border: 1px solid var(--border); }
+
+    /* ── Status dots ── */
+    .status-dot {
+      display: inline-block;
+      width: 8px; height: 8px;
+      border-radius: 50%;
+      margin-right: 6px;
+    }
+    .dot-ok  { background: var(--green); box-shadow: 0 0 6px var(--green); }
+    .dot-err { background: var(--red); }
+    .dot-warn { background: var(--yellow); }
+
+    /* ── Misc ── */
+    .empty-state {
+      text-align: center;
+      padding: 60px 20px;
+      color: var(--text-muted);
+    }
+    .empty-state h3 { font-size: 18px; margin-bottom: 8px; }
+    .empty-state p { font-size: 13px; }
+    .section-header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      margin-bottom: 16px;
+    }
+    .section-title { font-size: 16px; font-weight: 600; }
+    .htmx-indicator { opacity: 0; transition: opacity .2s; }
+    .htmx-request .htmx-indicator { opacity: 1; }
+    .spinner {
+      display: inline-block;
+      width: 14px; height: 14px;
+      border: 2px solid var(--border);
+      border-top-color: var(--accent);
+      border-radius: 50%;
+      animation: spin .6s linear infinite;
+    }
+    @keyframes spin { to { transform: rotate(360deg); } }
+    .criterios-list { font-size: 11px; color: var(--text-muted); }
+    .change-pos { color: var(--green); }
+    .change-neg { color: var(--red); }
+  </style>
+</head>
+<body>
+  <nav>
+    <a class="nav-brand" href="/">⚡ Trading Scanner</a>
+    <div class="nav-links">
+      <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Dashboard</a>
+      <a href="/scan/history" {% if "/history" in request.url.path %}class="active"{% endif %}>Historial</a>
+      <a href="/settings" {% if "/settings" in request.url.path %}class="active"{% endif %}>Configuración</a>
+    </div>
+    <div class="nav-right">
+      {% if mock_schwab is defined and mock_schwab %}
+        <span class="nav-badge badge-mock">MOCK</span>
+      {% endif %}
+    </div>
+  </nav>
+  <main>
+    {% block content %}{% endblock %}
+  </main>
+</body>
+</html>

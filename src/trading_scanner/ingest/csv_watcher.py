@@ -1,9 +1,10 @@
+import asyncio
 import shutil
 import threading
 import time
 from datetime import datetime
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Coroutine, Optional
 
 from rich.console import Console
 from watchdog.events import FileSystemEventHandler
@@ -26,9 +27,17 @@ def wait_for_stable(path: Path, timeout_sec: int = 10) -> None:
 
 
 class CsvWatchHandler(FileSystemEventHandler):
-    def __init__(self, input_folder: Path, processed_folder: Path):
+    def __init__(
+        self,
+        input_folder: Path,
+        processed_folder: Path,
+        pipeline_callback: Optional[Callable] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ):
         self.input_folder = input_folder
         self.processed_folder = processed_folder
+        self.pipeline_callback = pipeline_callback
+        self.loop = loop
 
     def on_created(self, event):
         if event.is_directory:
@@ -53,7 +62,7 @@ class CsvWatchHandler(FileSystemEventHandler):
         try:
             tickers = parse_csv(path)
             console.log(
-                f"[green]CSV procesado:{path.name} -> {len(tickers)} tickers parseados[/green]"
+                f"[green]CSV procesado: {path.name} -> {len(tickers)} tickers[/green]"
             )
         except Exception as exc:
             console.log(f"[red]Error parseando CSV {path.name}: {exc}[/red]")
@@ -69,18 +78,36 @@ class CsvWatchHandler(FileSystemEventHandler):
         except Exception as exc:
             console.log(f"[red]Error moviendo CSV {path.name}: {exc}[/red]")
 
+        if self.pipeline_callback and self.loop and self.loop.is_running():
+            asyncio.run_coroutine_threadsafe(
+                self.pipeline_callback(tickers),
+                self.loop,
+            )
+
 
 class CSVWatcher:
-    def __init__(self, input_folder: Path, processed_folder: Optional[Path] = None):
+    def __init__(
+        self,
+        input_folder: Path,
+        processed_folder: Optional[Path] = None,
+        pipeline_callback: Optional[Callable[..., Coroutine]] = None,
+        loop: Optional[asyncio.AbstractEventLoop] = None,
+    ):
         self.input_folder = input_folder
         self.processed_folder = processed_folder or input_folder / "processed"
+        self.pipeline_callback = pipeline_callback
+        self.loop = loop
         self.observer = Observer()
-        self.thread: Optional[threading.Thread] = None
 
     def start(self) -> None:
         self.input_folder.mkdir(parents=True, exist_ok=True)
         self.processed_folder.mkdir(parents=True, exist_ok=True)
-        handler = CsvWatchHandler(self.input_folder, self.processed_folder)
+        handler = CsvWatchHandler(
+            self.input_folder,
+            self.processed_folder,
+            pipeline_callback=self.pipeline_callback,
+            loop=self.loop,
+        )
         self.observer.schedule(handler, str(self.input_folder), recursive=False)
         self.observer.start()
         console.log(f"[green]CSV watcher iniciado en {self.input_folder}[/green]")
@@ -89,4 +116,4 @@ class CSVWatcher:
         if self.observer.is_alive():
             self.observer.stop()
             self.observer.join()
-            console.log(f"[yellow]CSV watcher detenido[/yellow]")
+            console.log("[yellow]CSV watcher detenido[/yellow]")

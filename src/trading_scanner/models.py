@@ -37,7 +37,8 @@ class Clasificacion(str, Enum):
 class FuenteDatos(str, Enum):
     """Origen de los datos evaluados."""
 
-    LIVE = "LIVE"  # datos de hoy via Schwab
+    LIVE = "LIVE"        # datos de hoy via Schwab real
+    MOCK = "MOCK"        # datos sintéticos (MOCK_SCHWAB=true) — nunca operar con esto
     HISTORICO = "HISTORICO"  # datos históricos para backtesting
 
 
@@ -94,6 +95,8 @@ class ScanConfig(BaseModel):
     atr_pct_umbral_day: float = 3.0  # criterio 4: ATR% > X → day
     atr_pct_umbral_swing_min: float = 1.5  # criterio 4: ATR% entre X e Y → swing
     atr_pct_umbral_swing_max: float = 3.0
+    ivr_umbral_compra: float = 30.0  # criterio 6: IVR < X → señal day (opciones baratas)
+    ivr_umbral_venta: float = 50.0   # criterio 6: IVR > X → señal swing (opciones caras)
 
     # ── Pesos de los 7 criterios ─────────────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
@@ -137,6 +140,9 @@ class ScanConfig(BaseModel):
     velas_15m: int = 100  # ~5 días
     velas_4h: int = 60  # ~3 meses
     velas_diarias: int = 252  # ~1 año
+
+    # ── Períodos de cálculo de volumen ──────────────────────────────────────
+    relvol_periodo: int = 50  # ventana de velas para calcular el promedio de RelVol
 
     # ── Guardia contra clasificaciones con datos insuficientes ───────────────
     # Si menos de N criterios pudieron calcularse → DESCARTAR automáticamente.
