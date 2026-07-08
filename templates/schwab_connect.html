@@ -1,0 +1,72 @@
+{% extends "base.html" %}
+{% block title %}Conectar Schwab — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:640px;">
+
+  {% if error %}
+    <div class="card" style="border-color:var(--red);">
+      <div class="card-title" style="color:var(--red);">Error al conectar</div>
+      <p style="font-size:13px;">{{ error }}</p>
+    </div>
+  {% endif %}
+
+  {% if estado == "MOCK" %}
+    <div class="card">
+      <div class="card-title">Modo mock activo</div>
+      <p style="font-size:13px;color:var(--text-muted);">
+        El sistema está corriendo con <code>MOCK_SCHWAB=true</code>. Para conectar con
+        la cuenta real, quitá esa variable del entorno y reiniciá el servidor. Después
+        volvé a esta página para generar el token.
+      </p>
+      <div style="margin-top:16px;"><a class="btn btn-secondary" href="/settings">Ir a Configuración</a></div>
+    </div>
+  {% elif estado == "SIN_CREDENCIALES" %}
+    <div class="card">
+      <div class="card-title">Faltan credenciales</div>
+      <p style="font-size:13px;color:var(--text-muted);">
+        No hay <code>SCHWAB_APP_KEY</code> / <code>SCHWAB_APP_SECRET</code> configurados.
+        Cargalos en Configuración antes de conectar.
+      </p>
+      <div style="margin-top:16px;"><a class="btn btn-secondary" href="/settings">Ir a Configuración</a></div>
+    </div>
+  {% else %}
+
+    {% if ya_conectado %}
+      <div class="card" style="border-color:var(--green);">
+        <div class="card-title" style="color:var(--green);">Ya estás conectado</div>
+        <p style="font-size:13px;color:var(--text-muted);">
+          El token de Schwab ya es válido — el sistema está ON LINE. Si necesitás
+          reconectar (por ejemplo, con otra cuenta), podés repetir el flujo de abajo.
+        </p>
+      </div>
+    {% endif %}
+
+    <div class="card">
+      <div class="card-title">Paso 1 — Iniciar sesión en Schwab</div>
+      <p style="font-size:13px;color:var(--text-muted);margin-bottom:12px;">
+        Se abre una pestaña nueva para iniciar sesión con tu cuenta de Schwab.
+        Al final el navegador va a intentar redirigir a una URL local que va a mostrar
+        error de conexión — es esperado, copiá esa URL completa de la barra de direcciones.
+      </p>
+      <a class="btn btn-primary" href="{{ authorization_url }}" target="_blank" rel="noopener">
+        Iniciar sesión en Schwab
+      </a>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Paso 2 — Pegar la URL de redirect</div>
+      <form action="/schwab/connect" method="post">
+        <div class="form-group">
+          <label>URL de redirect</label>
+          <input type="text" name="received_url" placeholder="https://127.0.0.1/?code=...&state=..." autocomplete="off" required />
+          <div class="form-hint">Pegá acá la URL completa a la que te redirigió el navegador después del login.</div>
+        </div>
+        <button type="submit" class="btn btn-primary">Conectar</button>
+      </form>
+    </div>
+
+  {% endif %}
+
+</div>
+{% endblock %}

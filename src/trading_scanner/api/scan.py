@@ -8,13 +8,16 @@ POST /scan/upload    → recibe CSV manual, corre pipeline, redirige a /
 """
 
 import json
+import tempfile
 from datetime import date
 from pathlib import Path
 
 from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import HTMLResponse, JSONResponse, RedirectResponse
 
+from ..config import settings
 from ..database import db
+from ..fetchers.schwab_client import estado_conexion
 from ..ingest.csv_parser import parse_csv
 from ..models import ScanConfig
 
@@ -32,13 +35,27 @@ def _parse_results(rows: list[dict]) -> list[dict]:
     return rows
 
 
+def _dedupe_latest_por_ticker(rows: list[dict]) -> list[dict]:
+    """Cada re-evaluación (upload manual, evento de streaming) persiste una
+    fila nueva para el histórico de backtesting — nunca sobreescribe. Para
+    vistas "en vivo" (dashboard, totales) nos interesa solo el estado más
+    reciente de cada ticker, no todas sus re-evaluaciones acumuladas.
+    """
+    latest: dict[str, dict] = {}
+    for r in rows:
+        ticker = r.get("ticker")
+        if ticker not in latest or r.get("timestamp", "") > latest[ticker].get("timestamp", ""):
+            latest[ticker] = r
+    return list(latest.values())
+
+
 @router.get("/latest")
 async def get_latest(request: Request):
     try:
         rows = await db.get_scan_results_by_date(date.today().isoformat())
     except Exception:
         rows = []
-    rows = _parse_results(rows)
+    rows = _dedupe_latest_por_ticker(_parse_results(rows))
     rows.sort(key=lambda r: r.get("confianza", 0.0), reverse=True)
 
     if "HX-Request" in request.headers:
@@ -58,7 +75,7 @@ async def get_partial(request: Request):
         rows = await db.get_scan_results_by_date(date.today().isoformat())
     except Exception:
         rows = []
-    rows = _parse_results(rows)
+    rows = _dedupe_latest_por_ticker(_parse_results(rows))
     rows.sort(key=lambda r: r.get("confianza", 0.0), reverse=True)
     templates = request.app.state.templates
     return templates.TemplateResponse(
@@ -76,17 +93,22 @@ async def get_history(request: Request):
         rows = []
     rows = _parse_results(rows)
 
-    # Agrupar por fecha
-    by_date: dict[str, list[dict]] = {}
+    # Agrupar por fecha, dedupe por ticker dentro de cada fecha
+    by_date_raw: dict[str, list[dict]] = {}
     for r in rows:
         d = r.get("fecha", "")
-        by_date.setdefault(d, []).append(r)
+        by_date_raw.setdefault(d, []).append(r)
+    by_date = {d: _dedupe_latest_por_ticker(rs) for d, rs in by_date_raw.items()}
 
     templates = request.app.state.templates
     return templates.TemplateResponse(
         request=request,
         name="history.html",
-        context={"by_date": by_date},
+        context={
+            "by_date": by_date,
+            "mock_schwab": settings.mock_schwab,
+            "schwab_estado": await estado_conexion(),
+        },
     )
 
 
@@ -95,9 +117,10 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     from ..pipeline import run_pipeline
 
     content = await file.read()
-    tmp_path = Path(request.app.state.settings.input_folder) / f"upload_{file.filename}"
-    tmp_path.parent.mkdir(parents=True, exist_ok=True)
-    tmp_path.write_bytes(content)
+
+    with tempfile.NamedTemporaryFile(suffix=".csv", delete=False) as tmp:
+        tmp.write(content)
+        tmp_path = Path(tmp.name)
 
     try:
         tickers = parse_csv(tmp_path)

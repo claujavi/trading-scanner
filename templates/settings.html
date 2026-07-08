@@ -49,18 +49,28 @@
           </div>
         </div>
         <div>
-          {% if mock_schwab %}
+          {% if schwab_estado == "MOCK" %}
             <span class="status-dot dot-warn"></span>
             <span style="color:var(--yellow);font-size:13px;">Mock</span>
-          {% elif schwab_configured %}
+          {% elif schwab_estado == "ON_LINE" %}
             <span class="status-dot dot-ok"></span>
-            <span style="color:var(--green);font-size:13px;">Configurado</span>
+            <span style="color:var(--green);font-size:13px;">Conectado</span>
+          {% elif schwab_estado == "DESCONECTADO" %}
+            <span class="status-dot dot-err"></span>
+            <span style="color:var(--red);font-size:13px;">Sin token — <a href="/schwab/connect" style="color:inherit;">conectar</a></span>
           {% else %}
             <span class="status-dot dot-err"></span>
             <span style="color:var(--red);font-size:13px;">Sin credenciales</span>
           {% endif %}
         </div>
       </div>
+
+      {% if token_creado_en %}
+      <div style="font-size:11px;color:var(--text-muted);padding-left:2px;">
+        Token generado el {{ token_creado_en.strftime("%Y-%m-%d %H:%M") }}
+        (hace {{ "%.1f"|format(token_edad_dias) }} días{% if token_edad_dias >= 7 %} — vencido, el refresh_token de Schwab dura ~7 días{% endif %})
+      </div>
+      {% endif %}
 
     </div>
   </div>
@@ -131,9 +141,15 @@
         </tr>
       </tbody>
     </table>
-    <p style="font-size:12px;color:var(--text-muted);margin-top:12px;">
-      Para activar el modo mock sin Schwab: <code style="background:var(--bg3);padding:1px 6px;border-radius:3px;">MOCK_SCHWAB=true</code> en el .env o como variable de entorno.
-    </p>
+    <form action="/settings/mock" method="post" style="margin-top:16px;">
+      <input type="hidden" name="activar" value="{{ 'false' if mock_schwab else 'true' }}" />
+      <button type="submit" class="btn {{ 'btn-secondary' if mock_schwab else 'btn-primary' }}">
+        {% if mock_schwab %}Desactivar modo mock{% else %}Activar modo mock{% endif %}
+      </button>
+      <span style="font-size:12px;color:var(--text-muted);margin-left:8px;">
+        {% if mock_schwab %}Volvés a usar datos reales de Schwab de inmediato.{% else %}Genera datos sintéticos sin necesitar conexión a Schwab. Nunca operar con esta información.{% endif %}
+      </span>
+    </form>
   </div>
 
 </div>
@@ -143,6 +159,15 @@
             padding:12px 20px;border-radius:var(--radius);font-size:13px;font-weight:600;
             box-shadow:0 4px 20px rgba(0,0,0,.4);">
   ✓ Configuración guardada en .env
+</div>
+<script>setTimeout(()=>document.querySelector('[style*="position:fixed"]').remove(), 4000)</script>
+{% endif %}
+
+{% if request.query_params.get("mock_saved") %}
+<div style="position:fixed;bottom:24px;right:24px;background:#166534;color:#bbf7d0;
+            padding:12px 20px;border-radius:var(--radius);font-size:13px;font-weight:600;
+            box-shadow:0 4px 20px rgba(0,0,0,.4);">
+  ✓ Modo Schwab actualizado
 </div>
 <script>setTimeout(()=>document.querySelector('[style*="position:fixed"]').remove(), 4000)</script>
 {% endif %}

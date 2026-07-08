@@ -25,10 +25,13 @@ from fastapi.templating import Jinja2Templates
 
 from rich.console import Console
 
+from .api.scan import _dedupe_latest_por_ticker
 from .api.scan import router as scan_router
+from .api.schwab import router as schwab_router
 from .api.settings import router as settings_router
 from .config import settings
 from .database import db
+from .fetchers.schwab_client import estado_conexion
 from .ingest.csv_parser import parse_csv
 from .ingest.csv_watcher import CSVWatcher
 from .models import ScanConfig
@@ -102,6 +105,7 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 # Routers
 app.include_router(scan_router)
 app.include_router(settings_router)
+app.include_router(schwab_router)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────
@@ -120,6 +124,7 @@ async def dashboard(request: Request):
             r["criterios_incompletos"] = json.loads(raw) if isinstance(raw, str) else raw
         except Exception:
             r["criterios_incompletos"] = []
+    rows = _dedupe_latest_por_ticker(rows)
     rows.sort(key=lambda r: r.get("confianza", 0.0), reverse=True)
 
     return request.app.state.templates.TemplateResponse(
@@ -129,6 +134,7 @@ async def dashboard(request: Request):
             "results": rows,
             "today": date.today().isoformat(),
             "mock_schwab": settings.mock_schwab,
+            "schwab_estado": await estado_conexion(),
             "scanner_port": settings.scanner_port,
         },
     )

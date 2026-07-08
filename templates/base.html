@@ -78,6 +78,8 @@
       font-weight: 600;
     }
     .badge-mock { background: #78350f; color: #fcd34d; }
+    .badge-online { background: #166534; color: #bbf7d0; }
+    .badge-offline { background: #7f1d1d; color: #fca5a5; }
 
     /* ── Layout ── */
     main { padding: 24px; flex: 1; max-width: 1400px; width: 100%; margin: 0 auto; }
@@ -273,6 +275,11 @@
     <div class="nav-right">
       {% if mock_schwab is defined and mock_schwab %}
         <span class="nav-badge badge-mock">MOCK</span>
+      {% elif schwab_estado is defined and schwab_estado == "ON_LINE" %}
+        <span class="nav-badge badge-online">ON LINE</span>
+      {% elif schwab_estado is defined %}
+        <span class="nav-badge badge-offline">DESCONECTADO</span>
+        <a class="btn btn-primary" style="padding:4px 12px;font-size:12px;" href="/schwab/connect">Conectar Schwab</a>
       {% endif %}
     </div>
   </nav>

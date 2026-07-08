@@ -38,7 +38,7 @@ class TursoClient:
         """
         if not self.base_url or not self.auth_token:
             return []
-        async with httpx.AsyncClient(timeout=5.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             payload = {"requests": [
                 {"type": "execute", "stmt": {"sql": sql, "args": [
                     {"type": "text", "value": str(p)} if p is not None else {"type": "null"}
@@ -79,7 +79,7 @@ class TursoClient:
             ]}})
         requests.append({"type": "close"})
 
-        async with httpx.AsyncClient(timeout=10.0) as client:
+        async with httpx.AsyncClient(timeout=30.0) as client:
             resp = await client.post(
                 f"{self.base_url}/v2/pipeline",
                 headers=self.headers,

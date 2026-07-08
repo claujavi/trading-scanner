@@ -113,7 +113,10 @@ async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanR
     try:
         await db.insert_scan_result(result)
     except Exception as exc:
-        console.log(f"[red]Error persistiendo {ticker} en Turso: {exc}[/red]")
+        console.log(
+            f"[red]Error persistiendo {ticker} en Turso: "
+            f"{type(exc).__name__}: {exc or 'sin detalle'}[/red]"
+        )
 
     return result
 
