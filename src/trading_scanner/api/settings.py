@@ -6,6 +6,7 @@ POST /settings      → guarda credenciales en .env (requiere reinicio para que 
 POST /settings/mock → activa/desactiva modo mock en caliente, sin reiniciar
 """
 
+from datetime import date
 from pathlib import Path
 
 import httpx
@@ -64,9 +65,12 @@ async def _check_turso() -> bool:
 
 
 async def _check_calendar() -> bool:
+    """Trading Calendar no expone /health — usamos un endpoint real y
+    liviano (is-business-day) solo para confirmar que responde."""
+    hoy = date.today().isoformat()
     try:
         async with httpx.AsyncClient(timeout=2.0) as client:
-            r = await client.get(f"{settings.calendar_base_url}/health")
+            r = await client.get(f"{settings.calendar_base_url}/calendar/is-business-day/{hoy}")
             return r.status_code == 200
     except Exception:
         return False

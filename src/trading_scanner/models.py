@@ -129,6 +129,7 @@ class ScanConfig(BaseModel):
     sma_tendencia: int = 200
     rsi_periodo: int = 14
     atr_periodo: int = 14
+    hv_periodo: int = 20  # ventana de volatilidad histórica realizada — proxy de IVR (ver criterio 6)
     macd_rapida: int = 12
     macd_lenta: int = 26
     macd_signal: int = 9
@@ -208,7 +209,7 @@ class ScanResult(BaseModel):
     macd_cruce_alcista_d: Optional[bool] = None
 
     # ── IVR (opciones) ───────────────────────────────────────────────────────
-    ivr: Optional[float] = None  # IV Rank actual
+    ivr: Optional[float] = None  # HV Rank (proxy de IVR — ver pipeline._calcular_ivr)
     ivr_señal_day: Optional[bool] = None  # True si IVR no es determinante
     ivr_señal_swing: Optional[bool] = None  # True si IVR < 30% o > 50%
 

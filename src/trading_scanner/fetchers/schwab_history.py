@@ -122,7 +122,7 @@ def _resample_to_4h(df: pl.DataFrame) -> pl.DataFrame:
         interval_start=(pl.col("timestamp").dt.truncate("4h"))
     )
     aggregated = (
-        df.groupby("interval_start")
+        df.group_by("interval_start")
           .agg([
               pl.col("open").first().alias("open"),
               pl.col("high").max().alias("high"),

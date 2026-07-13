@@ -7,6 +7,7 @@ from pathlib import Path
 from typing import Optional
 from zoneinfo import ZoneInfo
 
+import httpx
 from rich.console import Console
 
 import schwab.auth as schwab_auth
@@ -162,11 +163,12 @@ def _verificar_conexion_real() -> str:
 
 NY_TZ = ZoneInfo("America/New_York")
 
-# Feriados de NYSE (mercado cerrado todo el día). Lista fija mantenida a
-# mano — sin librería de calendario bursátil ni dependencia de otro
-# servicio. Si queda desactualizada, el único efecto es una llamada real de
-# más a Schwab ese día puntual — no rompe nada. Actualizar una vez por año.
-FERIADOS_NYSE: set[date] = {
+# Feriados de NYSE, respaldo local si Trading Calendar no responde (mismo
+# principio que calendar_client.py: nunca bloquear por su ausencia). Fuente
+# primaria: GET {calendar_base_url}/calendar/holidays/{year}. Si eso falla,
+# se cae a esta lista fija — desactualizada, el único efecto es una llamada
+# real de más a Schwab ese día puntual, no rompe nada.
+FERIADOS_NYSE_FALLBACK: set[date] = {
     date(2026, 1, 1), date(2026, 1, 19), date(2026, 2, 16), date(2026, 4, 3),
     date(2026, 5, 25), date(2026, 6, 19), date(2026, 7, 3), date(2026, 9, 7),
     date(2026, 11, 26), date(2026, 12, 25),
@@ -178,8 +180,34 @@ FERIADOS_NYSE: set[date] = {
 _VENTANA_INICIO = dtime(7, 0)
 _VENTANA_FIN = dtime(17, 0)
 
+# Cache de feriados por año — se piden una sola vez a Trading Calendar y
+# quedan en memoria el resto de la vida del proceso (los feriados de un
+# año no cambian una vez publicados).
+_feriados_cache: dict[int, set[date]] = {}
 
-def _en_horario_habil() -> bool:
+
+async def _obtener_feriados(year: int) -> set[date]:
+    if year in _feriados_cache:
+        return _feriados_cache[year]
+
+    try:
+        async with httpx.AsyncClient(timeout=3.0) as client:
+            resp = await client.get(f"{settings.calendar_base_url}/calendar/holidays/{year}")
+            resp.raise_for_status()
+            data = resp.json()
+            feriados = {date.fromisoformat(d) for d in data["holidays"]}
+    except Exception:
+        console.log(
+            f"[yellow]No se pudo obtener feriados NYSE de Trading Calendar "
+            f"para {year} — usando lista local de respaldo.[/yellow]"
+        )
+        feriados = {d for d in FERIADOS_NYSE_FALLBACK if d.year == year}
+
+    _feriados_cache[year] = feriados
+    return feriados
+
+
+async def _en_horario_habil() -> bool:
     """Ventana amplia en hora de Nueva York (7:00–17:00 ET, lun-vie, sin
     feriados NYSE) — cubre pre-market (cuando llega el CSV de ToS y el
     pipeline sí necesita Schwab en vivo) hasta un rato después del cierre.
@@ -191,7 +219,8 @@ def _en_horario_habil() -> bool:
     ahora = datetime.now(NY_TZ)
     if ahora.weekday() >= 5:  # sábado=5, domingo=6
         return False
-    if ahora.date() in FERIADOS_NYSE:
+    feriados = await _obtener_feriados(ahora.year)
+    if ahora.date() in feriados:
         return False
     return _VENTANA_INICIO <= ahora.time() <= _VENTANA_FIN
 
@@ -222,7 +251,7 @@ async def estado_conexion() -> str:
     if not settings.schwab_app_key or not settings.schwab_app_secret:
         return "SIN_CREDENCIALES"
 
-    if not _en_horario_habil():
+    if not await _en_horario_habil():
         # Fuera de horario/día hábil: no tiene sentido gastar una llamada
         # real a Schwab (fin de semana, feriado, madrugada). Se reusa el
         # último estado conocido, sin importar si el TTL normal ya venció.

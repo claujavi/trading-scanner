@@ -1,4 +1,5 @@
 from typing import Optional
+import numpy as np
 import polars as pl
 import pandas as pd
 
@@ -52,6 +53,32 @@ def calc_relvol(df: pl.DataFrame, periodo: int) -> float:
         return 0.0
     current = vol.iloc[-1]
     return float(current / avg)
+
+
+def calc_hv_rank(df: pl.DataFrame, periodo_hv: int = 20) -> Optional[float]:
+    """Volatilidad histórica (realizada) de precio, rankeada contra el
+    último año de datos disponibles — proxy de IV Rank.
+
+    Schwab no expone el rango de 52 semanas de volatilidad IMPLÍCITA (solo
+    la IV actual y el rango de 52 semanas de PRECIO), así que no se puede
+    calcular un IV Rank real. Esto mide en cambio dónde está la
+    volatilidad realizada de hoy (ventana de `periodo_hv` días) respecto
+    al rango de volatilidad realizada del último año — mismo propósito
+    práctico (bajo = calmo/day, alto = turbulento/swing), pero mirando
+    hacia atrás en vez de la expectativa de opciones.
+    """
+    pdf = _to_pandas(df)
+    if "close" not in pdf.columns or len(pdf) < periodo_hv + 2:
+        return None
+    close = pdf["close"].astype(float)
+    log_ret = np.log(close / close.shift(1))
+    hv = log_ret.rolling(window=periodo_hv).std().dropna()
+    if len(hv) < 2:
+        return None
+    hv_min, hv_max = hv.min(), hv.max()
+    if hv_max - hv_min == 0:
+        return None
+    return float((hv.iloc[-1] - hv_min) / (hv_max - hv_min) * 100)
 
 
 def calc_obv(df: pl.DataFrame) -> pl.Series:

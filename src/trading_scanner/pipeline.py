@@ -3,7 +3,7 @@ Pipeline pre-market: orquesta la evaluación completa de cada ticker.
 
 Flujo por ticker (en paralelo con asyncio.gather):
   1. schwab_history → velas 5m/15m/4h/d
-  2. schwab_options → IVR
+  2. indicators.volume → ATR%, RelVol, HV Rank (proxy de IVR)
   3. calendar_client → warning + catalizadores
   4. signals → cruces EMA, sobre SMA200
   5. evaluator → ScanResult
@@ -22,9 +22,10 @@ from .config import settings
 from .database import db
 from .engine.evaluator import DatosTickerCompletos, evaluar
 from .engine.signals import detect_setup_timeframe
-from .fetchers import calendar_client, schwab_options
+from .fetchers import calendar_client
 from .fetchers import schwab_history as schwab_hist
 from .fetchers.mock_schwab import generate_ohlcv, get_mock_ivr
+from .indicators.volume import calc_atr_pct, calc_hv_rank, calc_relvol
 from .models import FuenteDatos, ScanConfig, ScanResult, TickerBasico
 
 console = Console()
@@ -62,25 +63,55 @@ async def _fetch_history(
         return _EMPTY_DF, _EMPTY_DF, _EMPTY_DF, _EMPTY_DF
 
 
-async def _fetch_ivr(ticker: str) -> Optional[float]:
+def _calcular_ivr(ticker: str, df_d: pl.DataFrame, config: ScanConfig) -> Optional[float]:
+    """Proxy de IVR. Schwab no expone el rango de 52 semanas de volatilidad
+    implícita (solo la IV actual y el rango de 52 semanas de PRECIO), así
+    que no se puede calcular un IV Rank real — se usa en su lugar HV Rank
+    (volatilidad histórica de precio rankeada contra el último año, ver
+    calc_hv_rank). En modo mock se mantiene el valor sintético de siempre.
+    """
     if settings.mock_schwab:
         return get_mock_ivr(ticker)
-    return await asyncio.to_thread(schwab_options.get_ivr, ticker)
+    if df_d is None or df_d.is_empty():
+        return None
+    return calc_hv_rank(df_d, config.hv_periodo)
+
+
+def _calcular_atr_pct(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
+    """ATR% calculado sobre velas diarias de Schwab — no depende de que el
+    CSV de ToS incluya esa columna, y es el mismo cálculo que usaría el
+    backtester (que no tiene CSV en absoluto)."""
+    if df_d is None or df_d.is_empty():
+        return None
+    valores = calc_atr_pct(df_d, periodo).to_list()
+    if not valores:
+        return None
+    ultimo = valores[-1]
+    return float(ultimo) if ultimo not in (None, 0.0) else None
+
+
+def _calcular_relvol(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
+    """RelVol calculado sobre velas diarias de Schwab — mismo motivo que
+    _calcular_atr_pct: el CSV no está disponible en backtesting."""
+    if df_d is None or df_d.is_empty():
+        return None
+    valor = calc_relvol(df_d, periodo)
+    return valor if valor > 0 else None
 
 
 async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanResult:
     ticker = ticker_data.ticker
 
-    (df_5m, df_15m, df_4h, df_d), ivr, warning = await asyncio.gather(
+    (df_5m, df_15m, df_4h, df_d), warning = await asyncio.gather(
         _fetch_history(ticker, ticker_data.precio, config),
-        _fetch_ivr(ticker),
         calendar_client.get_warning(ticker),
     )
 
     signals = detect_setup_timeframe(df_5m, df_15m, df_4h, df_d, config)
 
-    relvol = ticker_data.relvol if ticker_data.relvol > 0 else None
-    atr_pct = ticker_data.atr_pct if ticker_data.atr_pct > 0 else None
+    relvol = _calcular_relvol(df_d, config.relvol_periodo)
+    atr_pct = _calcular_atr_pct(df_d, config.atr_periodo)
+    ivr = _calcular_ivr(ticker, df_d, config)
 
     datos = DatosTickerCompletos(
         ticker=ticker,
