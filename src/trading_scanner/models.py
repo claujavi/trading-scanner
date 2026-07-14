@@ -57,6 +57,8 @@ class TickerBasico(BaseModel):
     relvol: float
     atr_pct: float
     volumen_promedio: int
+    bid: Optional[float] = None
+    ask: Optional[float] = None
 
 
 # ============================================================================
@@ -78,8 +80,10 @@ class ScanConfig(BaseModel):
     creada_en: datetime = Field(default_factory=datetime.utcnow)
 
     # ── Filtros de entrada (equivalentes a los filtros de ToS) ──────────────
-    # Estos no se usan para filtrar el CSV (ToS ya filtró), sino para
-    # validar que el CSV cumple los criterios y para el backtesting histórico
+    # No filtran el CSV en sí (ToS ya filtró), sino que validan que cada
+    # ticker cumpla los mínimos antes de evaluarlo — si no, se descarta
+    # directamente (ver evaluator._validar_filtros_entrada). Sirven también
+    # de referencia para el backtesting histórico.
     precio_min: float = 5.0
     precio_max: float = 500.0
     volumen_promedio_min: int = 500_000
@@ -87,6 +91,7 @@ class ScanConfig(BaseModel):
     variacion_diaria_min_pct: float = 2.0
     relvol_min: float = 1.5
     atr_pct_min: float = 2.0
+    spread_max_pct: float = 1.0  # spread bid/ask máximo aceptable, % del precio
 
     # ── Umbrales de los criterios objetivos ─────────────────────────────────
     relvol_umbral_day: float = 3.0  # criterio 3: RelVol > X → day

@@ -25,7 +25,7 @@ from .engine.signals import detect_setup_timeframe
 from .fetchers import calendar_client
 from .fetchers import schwab_history as schwab_hist
 from .fetchers.mock_schwab import generate_ohlcv, get_mock_ivr
-from .indicators.volume import calc_atr_pct, calc_hv_rank, calc_relvol
+from .indicators.volume import calc_atr_pct, calc_avg_volume, calc_hv_rank, calc_relvol
 from .models import FuenteDatos, ScanConfig, ScanResult, TickerBasico
 
 console = Console()
@@ -99,6 +99,15 @@ def _calcular_relvol(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
     return valor if valor > 0 else None
 
 
+def _calcular_volumen_promedio(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
+    """Volumen promedio para el filtro de entrada volumen_promedio_min —
+    mismo motivo que _calcular_atr_pct/_calcular_relvol: el CSV no siempre
+    trae la columna Avg Volume."""
+    if df_d is None or df_d.is_empty():
+        return None
+    return calc_avg_volume(df_d, periodo)
+
+
 async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanResult:
     ticker = ticker_data.ticker
 
@@ -112,6 +121,7 @@ async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanR
     relvol = _calcular_relvol(df_d, config.relvol_periodo)
     atr_pct = _calcular_atr_pct(df_d, config.atr_periodo)
     ivr = _calcular_ivr(ticker, df_d, config)
+    volumen_promedio = _calcular_volumen_promedio(df_d, config.relvol_periodo)
 
     datos = DatosTickerCompletos(
         ticker=ticker,
@@ -136,6 +146,9 @@ async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanR
         filing_8k_24h=warning.filing_8k_24h,
         upgrade_downgrade_24h=warning.upgrade_downgrade_24h,
         catalizador_detectado=warning.catalizador_detectado,
+        volumen_promedio=volumen_promedio,
+        bid=ticker_data.bid,
+        ask=ticker_data.ask,
     )
 
     result = evaluar(datos, config)

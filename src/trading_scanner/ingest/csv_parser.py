@@ -1,5 +1,5 @@
 from pathlib import Path
-from typing import Iterable
+from typing import Iterable, Optional
 
 import polars as pl
 
@@ -19,6 +19,9 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     "Rel Volume": ["Rel Volume", "Rel Vol", "RelVol", "Vol Index"],
     "ATR%":       ["ATR%", "ATR %", "ATR"],
     "Avg Volume": ["Avg Volume", "Avg Vol"],
+    "Bid":        ["Bid"],
+    "Ask":        ["Ask"],
+    "Net Chng":   ["Net Chng", "NetChng", "Net Change", "Net Chg"],
 }
 
 
@@ -92,6 +95,42 @@ def _parse_float(value) -> float:
         return 0.0
 
 
+def _parse_optional_float(value) -> Optional[float]:
+    """Como _parse_float, pero None si la columna no existe o viene vacía —
+    a diferencia de las métricas obligatorias, Bid/Ask no siempre están en
+    el export de ToS y no tiene sentido asumir 0.0 en ese caso."""
+    if value is None:
+        return None
+    s = str(value).replace("%", "").replace(",", "").strip()
+    if not s:
+        return None
+    try:
+        return float(s)
+    except ValueError:
+        return None
+
+
+def _variacion_diaria(row: dict) -> float:
+    """% de cambio diario. Prioriza la columna Change%; si viene en 0
+    (en algunos exports de ToS esa columna no se actualiza en pre-market)
+    y hay un Net Chng (cambio neto en $) disponible, la reconstruye desde
+    ahí: precio_anterior = Last - NetChng, % = NetChng / precio_anterior * 100.
+    """
+    pct = _parse_float(row.get("Change%"))
+    if pct != 0.0:
+        return pct
+
+    net_chng = _parse_optional_float(row.get("Net Chng"))
+    last = _parse_optional_float(row.get("Last"))
+    if net_chng is None or last is None:
+        return pct
+
+    precio_anterior = last - net_chng
+    if precio_anterior == 0:
+        return pct
+    return (net_chng / precio_anterior) * 100.0
+
+
 def _parse_int(value) -> int:
     """Parsea un entero que puede tener comas de miles."""
     if value is None:
@@ -135,11 +174,13 @@ def parse_csv(path: Path) -> list[TickerBasico]:
             TickerBasico(
                 ticker=symbol,
                 precio=_parse_float(row.get("Last")),
-                variacion_diaria_pct=_parse_float(row.get("Change%")),
+                variacion_diaria_pct=_variacion_diaria(row),
                 volumen_actual=_parse_int(row.get("Volume")),
                 relvol=_parse_float(row.get("Rel Volume")),
                 atr_pct=_parse_float(row.get("ATR%")),
                 volumen_promedio=_parse_int(row.get("Avg Volume")),
+                bid=_parse_optional_float(row.get("Bid")),
+                ask=_parse_optional_float(row.get("Ask")),
             )
         )
 

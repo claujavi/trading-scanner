@@ -40,6 +40,9 @@ class DatosTickerCompletos:
     filing_8k_24h: bool
     upgrade_downgrade_24h: bool
     catalizador_detectado: bool
+    volumen_promedio: Optional[float] = None
+    bid: Optional[float] = None
+    ask: Optional[float] = None
 
 
 _CRITERIO_NOMBRES = [
@@ -115,7 +118,53 @@ def _build_result(datos: DatosTickerCompletos, config: ScanConfig, **kwargs) -> 
     )
 
 
+def _validar_filtros_entrada(datos: DatosTickerCompletos, config: ScanConfig) -> list[str]:
+    """Filtros de entrada (ScanConfig): validan que el ticker sea
+    mínimamente operable antes de gastar los 7 criterios en él.
+
+    Distinto de un criterio incompleto — acá se descarta directamente. Si
+    un dato no está disponible (ej. sin bid/ask en el CSV), ese filtro
+    puntual simplemente no se evalúa, no bloquea por ausencia de dato.
+    """
+    violaciones = []
+
+    if not (config.precio_min <= datos.precio <= config.precio_max):
+        violaciones.append("precio")
+
+    if abs(datos.variacion_diaria_pct) < config.variacion_diaria_min_pct:
+        violaciones.append("variacion_diaria")
+
+    if datos.atr_pct is not None and datos.atr_pct < config.atr_pct_min:
+        violaciones.append("atr_pct")
+
+    if datos.relvol is not None and datos.relvol < config.relvol_min:
+        violaciones.append("relvol")
+
+    if datos.volumen_promedio is not None and datos.volumen_promedio < config.volumen_promedio_min:
+        violaciones.append("volumen_promedio")
+
+    if datos.bid is not None and datos.ask is not None and datos.precio > 0:
+        spread_pct = (datos.ask - datos.bid) / datos.precio * 100
+        if spread_pct > config.spread_max_pct:
+            violaciones.append("spread")
+
+    return violaciones
+
+
 def evaluar(datos: DatosTickerCompletos, config: ScanConfig) -> ScanResult:
+    violaciones = _validar_filtros_entrada(datos, config)
+    if violaciones:
+        return _build_result(
+            datos,
+            config,
+            score_day=0.0,
+            score_swing=0.0,
+            score_max_posible=0.0,
+            clasificacion=Clasificacion.DESCARTAR,
+            confianza=0.0,
+            criterios_incompletos=[f"FILTRO_ENTRADA:{v}" for v in violaciones],
+        )
+
     resultados = [
         criterio_timeframe_setup(
             datos.cruce_ema_921_5m,
@@ -171,3 +220,42 @@ def evaluar(datos: DatosTickerCompletos, config: ScanConfig) -> ScanResult:
         confianza=_normalizar_score(confianza),
         criterios_incompletos=criterios_incompletos,
     )
+
+
+def desglosar_criterios(result: ScanResult) -> list[dict]:
+    """Recalcula cada criterio individualmente a partir de un ScanResult ya
+    persistido, usando su config_snapshot — para auditar visualmente por
+    qué dio la clasificación que dio, sin duplicar la lista de criterios
+    de evaluar() en otro lugar (misma fuente de verdad)."""
+    config = ScanConfig(**result.config_snapshot)
+
+    resultados = [
+        criterio_timeframe_setup(
+            result.cruce_ema_921_5m,
+            result.cruce_ema_921_15m,
+            result.cruce_ema_921_4h,
+            result.cruce_ema_921_d,
+        ),
+        criterio_catalizador(result.catalizador_detectado, result.warning_calendar),
+        criterio_relvol(result.relvol, config),
+        criterio_atr_pct(result.atr_pct, config),
+        criterio_sma200(result.sobre_sma200),
+        criterio_ivr(result.ivr, config),
+        criterio_capital(config),
+    ]
+
+    desglose = []
+    for nombre, peso_attr, resultado in zip(_CRITERIO_NOMBRES, _PESOS_ATTRS, resultados):
+        peso = getattr(config, peso_attr)
+        if resultado is None:
+            desglose.append({
+                "nombre": nombre, "peso": peso, "incompleto": True,
+                "score_day": None, "score_swing": None,
+            })
+        else:
+            day, swing = resultado
+            desglose.append({
+                "nombre": nombre, "peso": peso, "incompleto": False,
+                "score_day": day, "score_swing": swing,
+            })
+    return desglose

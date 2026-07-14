@@ -78,9 +78,9 @@ def test_evaluador_retiene_ambiguo_si_ambos_scores_superan_el_umbral():
         cruce_ema_921_d=True,
         catalizador_detectado=True,
         warning_calendar="GREEN",
-        relvol=1.0,
-        atr_pct=1.0,
-        sobre_sma200=False,
+        relvol=2.0,  # zona swing del criterio, pero cumple el filtro de entrada relvol_min
+        atr_pct=2.5,  # ídem, zona swing del criterio y cumple atr_pct_min
+        sobre_sma200=True,  # rebalancea el empate ahora que relvol/atr_pct empujan swing
         ivr=55.0,
     )
 

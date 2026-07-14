@@ -205,6 +205,11 @@ class TursoClient:
         sql = "SELECT * FROM scan_results WHERE fecha >= ? ORDER BY fecha DESC, confianza DESC"
         return await self._execute(sql, [cutoff])
 
+    async def get_scan_results_by_ticker(self, ticker: str, limit: int = 30) -> list[dict]:
+        """Historial de evaluaciones de un ticker puntual, más reciente primero."""
+        sql = "SELECT * FROM scan_results WHERE ticker = ? ORDER BY timestamp DESC LIMIT ?"
+        return await self._execute(sql, [ticker.upper(), limit])
+
     # ────────────────────────────────────────────────────────────────────────
     # SCAN CONFIGS
     # ────────────────────────────────────────────────────────────────────────

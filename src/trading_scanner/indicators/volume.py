@@ -55,6 +55,21 @@ def calc_relvol(df: pl.DataFrame, periodo: int) -> float:
     return float(current / avg)
 
 
+def calc_avg_volume(df: pl.DataFrame, periodo: int) -> Optional[float]:
+    """Volumen promedio de las últimas `periodo` velas — usado para validar
+    el filtro de entrada volumen_promedio_min cuando el CSV de ToS no trae
+    la columna Avg Volume (mismo problema que atr_pct/relvol)."""
+    pdf = _to_pandas(df)
+    if "volume" not in pdf.columns or len(pdf) == 0:
+        return None
+    vol = pdf["volume"].astype(float)
+    window = vol.tail(periodo)
+    if len(window) == 0:
+        return None
+    avg = window.mean()
+    return float(avg) if avg > 0 else None
+
+
 def calc_hv_rank(df: pl.DataFrame, periodo_hv: int = 20) -> Optional[float]:
     """Volatilidad histórica (realizada) de precio, rankeada contra el
     último año de datos disponibles — proxy de IV Rank.

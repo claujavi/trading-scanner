@@ -18,7 +18,7 @@
     {% set cls = r.clasificacion | lower %}
     {% set warn = (r.warning_calendar or "none") | lower %}
     <tr>
-      <td><span class="ticker-sym">{{ r.ticker }}</span></td>
+      <td><a href="/ticker/{{ r.ticker }}" class="ticker-sym" style="color:inherit;text-decoration:none;">{{ r.ticker }}</a></td>
       <td class="mono">${{ "%.2f"|format(r.precio) }}</td>
       <td class="mono {% if r.variacion_diaria_pct >= 0 %}change-pos{% else %}change-neg{% endif %}">
         {% if r.variacion_diaria_pct >= 0 %}+{% endif %}{{ "%.2f"|format(r.variacion_diaria_pct) }}%

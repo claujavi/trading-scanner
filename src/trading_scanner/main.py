@@ -29,6 +29,7 @@ from .api.scan import _dedupe_latest_por_ticker
 from .api.scan import router as scan_router
 from .api.schwab import router as schwab_router
 from .api.settings import router as settings_router
+from .api.ticker import router as ticker_router
 from .config import settings
 from .database import db
 from .fetchers.schwab_client import estado_conexion
@@ -106,6 +107,7 @@ app.mount("/static", StaticFiles(directory=str(_STATIC_DIR)), name="static")
 app.include_router(scan_router)
 app.include_router(settings_router)
 app.include_router(schwab_router)
+app.include_router(ticker_router)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────

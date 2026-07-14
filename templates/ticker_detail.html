@@ -1,0 +1,140 @@
+{% extends "base.html" %}
+{% block title %}{{ ticker }} — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:900px;">
+
+  <div class="section-header">
+    <div class="section-title">{{ ticker }}</div>
+    <a href="/" class="btn btn-secondary">← Volver al dashboard</a>
+  </div>
+
+  {% if not result %}
+  <div class="empty-state">
+    <h3>Sin evaluaciones para {{ ticker }}</h3>
+    <p>Este ticker no apareció todavía en ningún scan.</p>
+  </div>
+  {% else %}
+
+  {% set cls = result.clasificacion.value | lower %}
+  {% if filtros_violados %}
+  <div class="card" style="border-color:var(--red);">
+    <div class="card-title" style="color:var(--red);">Descartado por filtro de entrada</div>
+    <p style="font-size:13px;">
+      No llegó a evaluarse con los 7 criterios — no cumple el mínimo en:
+      {{ filtros_violados | join(", ") }}.
+      El desglose de abajo es solo referencia de cómo se vería si hubiera pasado el filtro.
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">Última evaluación — {{ result.fecha }} {{ result.timestamp.strftime("%H:%M:%S") }}</div>
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-label">Precio</div>
+        <div class="stat-value mono">${{ "%.2f"|format(result.precio) }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Score Day</div>
+        <div class="stat-value stat-day mono">{{ "%.2f"|format(result.score_day) }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Score Swing</div>
+        <div class="stat-value stat-swing mono">{{ "%.2f"|format(result.score_swing) }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Confianza</div>
+        <div class="stat-value mono">{{ "%.0f"|format(result.confianza * 100) }}%</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Clasificación</div>
+        <div class="stat-value"><span class="badge badge-{{ cls }}">{{ result.clasificacion.value }}</span></div>
+      </div>
+    </div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Desglose por criterio</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Criterio</th>
+          <th>Peso</th>
+          <th>Score Day</th>
+          <th>Score Swing</th>
+          <th>Estado</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for c in desglose %}
+        <tr>
+          <td>{{ c.nombre }}</td>
+          <td class="mono">{{ "%.1f"|format(c.peso) }}</td>
+          {% if c.incompleto %}
+            <td colspan="2" style="color:var(--text-muted);">no calculable</td>
+            <td><span class="badge badge-descartar">INCOMPLETO</span></td>
+          {% else %}
+            <td class="mono">{{ "%.2f"|format(c.score_day) }}</td>
+            <td class="mono">{{ "%.2f"|format(c.score_swing) }}</td>
+            <td><span class="status-dot dot-ok"></span></td>
+          {% endif %}
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Indicadores crudos</div>
+    <table style="width:auto;">
+      <tbody>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">RelVol</td><td class="mono">{{ result.relvol }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">ATR%</td><td class="mono">{{ "%.2f"|format(result.atr_pct) }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">IVR (HV Rank)</td><td class="mono">{{ result.ivr if result.ivr is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Sobre SMA200</td><td>{{ result.sobre_sma200 if result.sobre_sma200 is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Sobre EMA50</td><td>{{ result.sobre_ema50 if result.sobre_ema50 is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Cruce EMA 9/21 (5m)</td><td>{{ result.cruce_ema_921_5m if result.cruce_ema_921_5m is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Cruce EMA 9/21 (15m)</td><td>{{ result.cruce_ema_921_15m if result.cruce_ema_921_15m is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Cruce EMA 9/21 (4h)</td><td>{{ result.cruce_ema_921_4h if result.cruce_ema_921_4h is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Cruce EMA 9/21 (diario)</td><td>{{ result.cruce_ema_921_d if result.cruce_ema_921_d is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Warning Calendar</td><td>{{ result.warning_calendar or "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Catalizador detectado</td><td>{{ result.catalizador_detectado }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+
+  {% if historial %}
+  <div class="card">
+    <div class="card-title">Historial de evaluaciones previas</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha</th>
+          <th>Hora</th>
+          <th>Clasificación</th>
+          <th>Score Day</th>
+          <th>Score Swing</th>
+          <th>Confianza</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for h in historial %}
+        <tr>
+          <td>{{ h.fecha }}</td>
+          <td class="mono">{{ h.timestamp[11:19] if h.timestamp else "" }}</td>
+          <td><span class="badge badge-{{ h.clasificacion | lower }}">{{ h.clasificacion }}</span></td>
+          <td class="mono">{{ "%.2f"|format(h.score_day) }}</td>
+          <td class="mono">{{ "%.2f"|format(h.score_swing) }}</td>
+          <td class="mono">{{ "%.0f"|format(h.confianza * 100) }}%</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% endif %}
+
+</div>
+{% endblock %}
