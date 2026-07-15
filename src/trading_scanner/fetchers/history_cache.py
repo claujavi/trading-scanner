@@ -102,7 +102,11 @@ async def get_history(
         df = pl.concat(dfs, how="vertical").sort("timestamp")
         return _filter_range(df, fecha_inicio, fecha_fin)
 
-    n_periods = _estimate_periods(timeframe, fecha_inicio, fecha_fin)
+    # schwab_history.py siempre pide velas terminando en "ahora" (no acepta
+    # una fecha de fin arbitraria) — si fecha_fin ya pasó, hay que pedir
+    # suficientes períodos para que esa ventana (ahora → atrás) alcance a
+    # cubrir fecha_inicio, no solo el largo del rango (fecha_fin - fecha_inicio).
+    n_periods = _estimate_periods(timeframe, fecha_inicio, max(fecha_fin, date.today()))
     df = await schwab_history.get_history_async(ticker, timeframe, n_periods)
     if df.is_empty():
         return df

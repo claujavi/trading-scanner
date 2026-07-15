@@ -1,0 +1,120 @@
+{% extends "base.html" %}
+{% block title %}Backtest — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:900px;">
+
+  <div class="section-header">
+    <div class="section-title">Backtest</div>
+  </div>
+
+  {% if error %}
+  <div class="card" style="border-color:var(--red);">
+    <div class="card-title" style="color:var(--red);">Error</div>
+    <p style="font-size:13px;">{{ error }}</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">Nuevo backtest</div>
+    <form action="/backtest/run" method="post">
+      <div class="form-group">
+        <label>Tickers (separados por coma, espacio o salto de línea)</label>
+        <textarea name="tickers" rows="3" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 12px;font-size:13px;font-family:'Consolas',monospace;" placeholder="AUR, QTTB, ELVA, BMNR, CLSK"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Fecha inicio</label>
+        <input type="date" name="fecha_inicio" required />
+      </div>
+      <div class="form-group">
+        <label>Fecha fin</label>
+        <input type="date" name="fecha_fin" required />
+      </div>
+      <div class="form-hint" style="margin-bottom:16px;">
+        Usa la config activa (la última guardada en /config). Sin catalizador ni spread
+        histórico — el Trading Calendar solo trackea 6 tickers fijos, y Schwab no expone
+        bid/ask histórico. Puede tardar según cantidad de tickers × días.
+      </div>
+      <button type="submit" class="btn btn-primary">Correr backtest</button>
+    </form>
+  </div>
+
+  {% if run %}
+  <div class="card">
+    <div class="card-title">Resultado — {{ run.fecha_inicio }} a {{ run.fecha_fin }}</div>
+    <div class="form-hint" style="margin-bottom:12px;">Tickers: {{ run.tickers | join(", ") }}</div>
+
+    <div class="stats-grid">
+      <div class="stat-box">
+        <div class="stat-label">Señales</div>
+        <div class="stat-value mono">{{ run.total_señales }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">Operadas</div>
+        <div class="stat-value mono">{{ run.total_operadas }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">DAY</div>
+        <div class="stat-value stat-day mono">{{ run.señales_day }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">SWING</div>
+        <div class="stat-value stat-swing mono">{{ run.señales_swing }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">AMBIGUO</div>
+        <div class="stat-value stat-amb mono">{{ run.señales_ambiguo }}</div>
+      </div>
+      <div class="stat-box">
+        <div class="stat-label">DESCARTAR</div>
+        <div class="stat-value stat-disc mono">{{ run.señales_descartadas }}</div>
+      </div>
+    </div>
+
+    <table style="width:auto;">
+      <tbody>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Win rate DAY</td><td class="mono">{{ "%.1f"|format(run.win_rate_day) }}%</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Win rate SWING</td><td class="mono">{{ "%.1f"|format(run.win_rate_swing) }}%</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">R:R promedio (todas)</td><td class="mono">{{ "%.2f"|format(run.rr_promedio_real) }}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">R:R promedio DAY</td><td class="mono">{{ "%.2f"|format(run.rr_promedio_day) }}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">R:R promedio SWING</td><td class="mono">{{ "%.2f"|format(run.rr_promedio_swing) }}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Profit factor</td><td class="mono">{{ "%.2f"|format(run.profit_factor) }}</td></tr>
+        <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Max drawdown (R acumulado)</td><td class="mono">{{ "%.2f"|format(run.max_drawdown_pct) }}</td></tr>
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if runs %}
+  <div class="card">
+    <div class="card-title">Backtests recientes</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha corrida</th>
+          <th>Rango</th>
+          <th>Tickers</th>
+          <th>Operadas</th>
+          <th>Win rate DAY</th>
+          <th>R:R prom.</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="mono">{{ r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "" }}</td>
+          <td class="mono">{{ r.fecha_inicio }} → {{ r.fecha_fin }}</td>
+          <td>{{ r.tickers | length }} tickers</td>
+          <td class="mono">{{ r.total_operadas }}</td>
+          <td class="mono">{{ "%.1f"|format(r.win_rate_day) }}%</td>
+          <td class="mono">{{ "%.2f"|format(r.rr_promedio_real) }}</td>
+          <td><a href="/backtest/{{ r.id }}" class="btn btn-secondary" style="padding:4px 10px;font-size:12px;">Ver</a></td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}
