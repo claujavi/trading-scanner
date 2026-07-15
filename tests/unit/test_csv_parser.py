@@ -25,9 +25,17 @@ def test_parse_csv_valid_sample():
 
 def test_parse_csv_missing_columns_raises_value_error(tmp_path):
     path = tmp_path / "missing_columns.csv"
-    path.write_text("Symbol,Last,Volume,ATR%\nAAPL,172.15,5678900,2.8\n")
+    path.write_text("Symbol,Last,ATR%\nAAPL,172.15,2.8\n")
 
     with pytest.raises(ValueError, match="faltan columnas obligatorias"):
+        parse_csv(path)
+
+
+def test_parse_csv_sin_columna_de_cambio_raises_value_error(tmp_path):
+    path = tmp_path / "sin_cambio.csv"
+    path.write_text("Symbol,Last,Volume,ATR%\nAAPL,172.15,5678900,2.8\n")
+
+    with pytest.raises(ValueError, match="columna de variación diaria"):
         parse_csv(path)
 
 

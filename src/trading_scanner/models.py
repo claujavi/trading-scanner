@@ -59,6 +59,8 @@ class TickerBasico(BaseModel):
     volumen_promedio: int
     bid: Optional[float] = None
     ask: Optional[float] = None
+    descripcion: Optional[str] = None
+    market_cap_millones: Optional[float] = None
 
 
 # ============================================================================

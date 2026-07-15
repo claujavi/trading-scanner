@@ -7,12 +7,20 @@ from ..models import TickerBasico
 
 
 # Columnas obligatorias en nuestro schema interno
-REQUIRED_COLUMNS = ["Symbol", "Last", "Change%", "Volume"]
+REQUIRED_COLUMNS = ["Symbol", "Last", "Volume"]
+
+# Al menos una de estas debe estar presente — _variacion_diaria() ya sabe
+# usar cualquiera como fuente (con fallback en cascada), pero si no viene
+# ninguna preferimos fallar clarito acá en vez de seguir con todo en 0.0
+# silenciosamente (que después el filtro de entrada descartaría igual, sin
+# dar pista de por qué).
+CHANGE_COLUMNS_ALT = ["Change%", "Ext Change%", "Net Chng", "Ext Net Chng"]
 
 # Mapeo de nombres alternativos de TOS → nombre interno
 # El orden importa: se usa el primer alias que coincida
 COLUMN_ALIASES: dict[str, list[str]] = {
     "Symbol":     ["Symbol"],
+    "Description": ["Description"],
     "Last":       ["Last"],
     "Change%":    ["Change%", "%Change", "Chng%", "Change"],
     "Volume":     ["Volume", "Vol"],
@@ -22,6 +30,15 @@ COLUMN_ALIASES: dict[str, list[str]] = {
     "Bid":        ["Bid"],
     "Ask":        ["Ask"],
     "Net Chng":   ["Net Chng", "NetChng", "Net Change", "Net Chg"],
+    "Ext Change%": [
+        "Extended Session Percent Change", "Extended Session % Change",
+        "Extended Session Percent",  # por si se acorta sin "Change" al renombrar
+    ],
+    "Ext Net Chng": [
+        "Extended Session Net Change",
+        "Extended Session Net",  # por si se acorta sin "Change" al renombrar
+    ],
+    "Market Cap": ["Market Cap", "MarketCap"],
 }
 
 
@@ -39,24 +56,34 @@ def _clean_name(name: str) -> str:
     return " ".join(name.split())
 
 
+def _normalize_alias(name: str) -> str:
+    """Para comparar nombres de columna sin importar mayúsculas/minúsculas
+    ni si el usuario usó espacio o guion bajo al renombrar la columna en
+    ToS (ej. "Vol Index" == "vol_index" == "VOL INDEX")."""
+    return " ".join(name.replace("_", " ").split()).lower()
+
+
 def _normalize_columns(df: pl.DataFrame) -> pl.DataFrame:
     """Renombra columnas con alias de TOS al nombre interno esperado.
 
     Los exports de ToS varían: a veces traen espacios extra al final
     ("Last "), a veces columnas fusionadas ("Symbol  Description") cuando
-    el separador real no coincide exactamente con lo esperado. Se limpia
-    el whitespace antes de matchear alias para tolerar esas variaciones.
+    el separador real no coincide exactamente con lo esperado, y el
+    usuario puede haber renombrado columnas en ToS usando "_" en vez de
+    espacio. Se normaliza antes de matchear alias para tolerar todo eso.
     """
     # Primero: limpiar whitespace de todos los nombres de columna
     clean_map = {col: _clean_name(col) for col in df.columns}
     if any(orig != clean for orig, clean in clean_map.items()):
         df = df.rename(clean_map)
 
+    columnas_normalizadas = {_normalize_alias(col): col for col in df.columns}
     rename_map: dict[str, str] = {}
     for canonical, aliases in COLUMN_ALIASES.items():
         for alias in aliases:
-            if alias in df.columns and alias != canonical:
-                rename_map[alias] = canonical
+            col_real = columnas_normalizadas.get(_normalize_alias(alias))
+            if col_real and col_real != canonical:
+                rename_map[col_real] = canonical
                 break
     if rename_map:
         df = df.rename(rename_map)
@@ -81,6 +108,12 @@ def _validate_columns(columns: Iterable[str]) -> None:
             f"CSV inválido: faltan columnas obligatorias {missing}. "
             f"Columnas encontradas: {cols}. "
             f"Se esperan: {REQUIRED_COLUMNS}."
+        )
+    if not any(c in cols for c in CHANGE_COLUMNS_ALT):
+        raise ValueError(
+            "CSV inválido: falta alguna columna de variación diaria. "
+            f"Se espera al menos una de {CHANGE_COLUMNS_ALT}. "
+            f"Columnas encontradas: {cols}."
         )
 
 
@@ -110,25 +143,66 @@ def _parse_optional_float(value) -> Optional[float]:
         return None
 
 
+def _pct_desde_net_chng(net_chng: Optional[float], last: Optional[float]) -> Optional[float]:
+    """precio_anterior = Last - NetChng, % = NetChng / precio_anterior * 100."""
+    if net_chng is None or last is None:
+        return None
+    precio_anterior = last - net_chng
+    if precio_anterior == 0:
+        return None
+    return (net_chng / precio_anterior) * 100.0
+
+
 def _variacion_diaria(row: dict) -> float:
-    """% de cambio diario. Prioriza la columna Change%; si viene en 0
-    (en algunos exports de ToS esa columna no se actualiza en pre-market)
-    y hay un Net Chng (cambio neto en $) disponible, la reconstruye desde
-    ahí: precio_anterior = Last - NetChng, % = NetChng / precio_anterior * 100.
+    """% de cambio diario, con fallback en cascada porque ToS reporta 0 en
+    columnas de "Regular Trading Hours" durante pre-market (la sesión
+    regular todavía no arrancó):
+
+    1. Change% (Regular Trading Hours) — sirve una vez que abre el mercado.
+    2. Net Chng (regular) reconstruido con Last, si está disponible.
+    3. Extended Session Percent Change — pensada específicamente para
+       pre-market/after-hours.
+    4. Extended Session Net Change reconstruido con Last.
     """
+    last = _parse_optional_float(row.get("Last"))
+
     pct = _parse_float(row.get("Change%"))
     if pct != 0.0:
         return pct
 
-    net_chng = _parse_optional_float(row.get("Net Chng"))
-    last = _parse_optional_float(row.get("Last"))
-    if net_chng is None or last is None:
+    pct = _pct_desde_net_chng(_parse_optional_float(row.get("Net Chng")), last)
+    if pct is not None:
         return pct
 
-    precio_anterior = last - net_chng
-    if precio_anterior == 0:
+    ext_pct = _parse_optional_float(row.get("Ext Change%"))
+    if ext_pct is not None and ext_pct != 0.0:
+        return ext_pct
+
+    pct = _pct_desde_net_chng(_parse_optional_float(row.get("Ext Net Chng")), last)
+    if pct is not None:
         return pct
-    return (net_chng / precio_anterior) * 100.0
+
+    return 0.0
+
+
+def _parse_market_cap(value) -> Optional[float]:
+    """Market cap en millones de USD. ToS lo exporta con sufijo M o B
+    (ej: "12,512 M", "1.2 B")."""
+    if value is None:
+        return None
+    s = str(value).replace(",", "").strip()
+    if not s:
+        return None
+    multiplicador = 1.0
+    if s.endswith("B"):
+        multiplicador = 1000.0
+        s = s[:-1].strip()
+    elif s.endswith("M"):
+        s = s[:-1].strip()
+    try:
+        return float(s) * multiplicador
+    except ValueError:
+        return None
 
 
 def _parse_int(value) -> int:
@@ -181,6 +255,8 @@ def parse_csv(path: Path) -> list[TickerBasico]:
                 volumen_promedio=_parse_int(row.get("Avg Volume")),
                 bid=_parse_optional_float(row.get("Bid")),
                 ask=_parse_optional_float(row.get("Ask")),
+                descripcion=(str(row["Description"]).strip() or None) if row.get("Description") else None,
+                market_cap_millones=_parse_market_cap(row.get("Market Cap")),
             )
         )
 
