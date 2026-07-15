@@ -1,0 +1,164 @@
+{% extends "base.html" %}
+{% block title %}Parámetros — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:780px;">
+
+  <div class="section-header">
+    <div class="section-title">Parámetros del evaluador</div>
+  </div>
+
+  {% if error %}
+  <div class="card" style="border-color:var(--red);">
+    <div class="card-title" style="color:var(--red);">No se pudo guardar</div>
+    <p style="font-size:12px;color:var(--text-muted);white-space:pre-wrap;">{{ error }}</p>
+  </div>
+  {% endif %}
+
+  <form action="/config" method="post">
+
+    <div class="card">
+      <div class="card-title">Metadatos</div>
+      <div class="form-group">
+        <label>Nombre</label>
+        <input type="text" name="nombre" value="{{ config.nombre }}" />
+      </div>
+      <div class="form-group">
+        <label>Descripción</label>
+        <input type="text" name="descripcion" value="{{ config.descripcion }}" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Filtros de entrada</div>
+      <div class="form-hint" style="margin-bottom:12px;">
+        Validan que cada ticker sea mínimamente operable antes de evaluarlo — si no cumple, se descarta directo (FILTRO_ENTRADA).
+      </div>
+      <div class="form-group"><label>Precio mínimo</label><input type="number" step="any" name="precio_min" value="{{ config.precio_min }}" /></div>
+      <div class="form-group"><label>Precio máximo</label><input type="number" step="any" name="precio_max" value="{{ config.precio_max }}" /></div>
+      <div class="form-group"><label>Volumen promedio mínimo</label><input type="number" step="1" name="volumen_promedio_min" value="{{ config.volumen_promedio_min }}" /></div>
+      <div class="form-group"><label>Float mínimo</label><input type="number" step="1" name="float_min" value="{{ config.float_min }}" /></div>
+      <div class="form-group"><label>Variación diaria mínima (%)</label><input type="number" step="any" name="variacion_diaria_min_pct" value="{{ config.variacion_diaria_min_pct }}" /></div>
+      <div class="form-group"><label>RelVol mínimo</label><input type="number" step="any" name="relvol_min" value="{{ config.relvol_min }}" /></div>
+      <div class="form-group"><label>ATR% mínimo</label><input type="number" step="any" name="atr_pct_min" value="{{ config.atr_pct_min }}" /></div>
+      <div class="form-group"><label>Spread bid/ask máximo (%)</label><input type="number" step="any" name="spread_max_pct" value="{{ config.spread_max_pct }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Umbrales de los criterios objetivos</div>
+      <div class="form-group"><label>RelVol umbral DAY (criterio 3)</label><input type="number" step="any" name="relvol_umbral_day" value="{{ config.relvol_umbral_day }}" /></div>
+      <div class="form-group"><label>RelVol umbral SWING mínimo</label><input type="number" step="any" name="relvol_umbral_swing_min" value="{{ config.relvol_umbral_swing_min }}" /></div>
+      <div class="form-group"><label>RelVol umbral SWING máximo</label><input type="number" step="any" name="relvol_umbral_swing_max" value="{{ config.relvol_umbral_swing_max }}" /></div>
+      <div class="form-group"><label>ATR% umbral DAY (criterio 4)</label><input type="number" step="any" name="atr_pct_umbral_day" value="{{ config.atr_pct_umbral_day }}" /></div>
+      <div class="form-group"><label>ATR% umbral SWING mínimo</label><input type="number" step="any" name="atr_pct_umbral_swing_min" value="{{ config.atr_pct_umbral_swing_min }}" /></div>
+      <div class="form-group"><label>ATR% umbral SWING máximo</label><input type="number" step="any" name="atr_pct_umbral_swing_max" value="{{ config.atr_pct_umbral_swing_max }}" /></div>
+      <div class="form-group"><label>IVR umbral compra (criterio 6, HV Rank bajo → day)</label><input type="number" step="any" name="ivr_umbral_compra" value="{{ config.ivr_umbral_compra }}" /></div>
+      <div class="form-group"><label>IVR umbral venta (HV Rank alto → swing)</label><input type="number" step="any" name="ivr_umbral_venta" value="{{ config.ivr_umbral_venta }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Pesos de los 7 criterios</div>
+      <div class="form-hint" style="margin-bottom:12px;">0.0 desactiva el criterio. 1.0 = peso igual para todos (default).</div>
+      <div class="form-group"><label>1 — Timeframe setup</label><input type="number" step="any" name="peso_timeframe_setup" value="{{ config.peso_timeframe_setup }}" /></div>
+      <div class="form-group"><label>2 — Catalizador</label><input type="number" step="any" name="peso_catalizador" value="{{ config.peso_catalizador }}" /></div>
+      <div class="form-group"><label>3 — RelVol</label><input type="number" step="any" name="peso_relvol" value="{{ config.peso_relvol }}" /></div>
+      <div class="form-group"><label>4 — ATR%</label><input type="number" step="any" name="peso_atr_pct" value="{{ config.peso_atr_pct }}" /></div>
+      <div class="form-group"><label>5 — SMA200</label><input type="number" step="any" name="peso_sma200" value="{{ config.peso_sma200 }}" /></div>
+      <div class="form-group"><label>6 — IVR (HV Rank)</label><input type="number" step="any" name="peso_ivr" value="{{ config.peso_ivr }}" /></div>
+      <div class="form-group"><label>7 — Capital</label><input type="number" step="any" name="peso_capital" value="{{ config.peso_capital }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Umbral de decisión</div>
+      <div class="form-group">
+        <label>Score mínimo (sobre total ponderado) para clasificar DAY/SWING</label>
+        <input type="number" step="any" name="umbral_decision" value="{{ config.umbral_decision }}" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Gestión de posición</div>
+      <div class="form-group">
+        <label>Modo de salida</label>
+        <select name="modo_salida" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 12px;font-size:13px;">
+          {% for modo in modos_salida %}
+          <option value="{{ modo.value }}" {% if config.modo_salida.value == modo.value %}selected{% endif %}>{{ modo.value }}</option>
+          {% endfor %}
+        </select>
+      </div>
+      <div class="form-group"><label>R:R target (solo FIXED_RR)</label><input type="number" step="any" name="rr_target" value="{{ config.rr_target }}" /></div>
+      <div class="form-group"><label>Stop — multiplicador ATR</label><input type="number" step="any" name="stop_atr_multiplicador" value="{{ config.stop_atr_multiplicador }}" /></div>
+      <div class="form-group"><label>Target — multiplicador ATR</label><input type="number" step="any" name="target_atr_multiplicador" value="{{ config.target_atr_multiplicador }}" /></div>
+      <div class="form-group"><label>Trailing — activación (R)</label><input type="number" step="any" name="trailing_activacion_r" value="{{ config.trailing_activacion_r }}" /></div>
+      <div class="form-group"><label>Trailing — lock (R)</label><input type="number" step="any" name="trailing_lock_r" value="{{ config.trailing_lock_r }}" /></div>
+      <div class="form-group"><label>Riesgo por operación (%)</label><input type="number" step="any" name="riesgo_por_operacion_pct" value="{{ config.riesgo_por_operacion_pct }}" /></div>
+      <div class="form-group"><label>Pérdida máxima diaria (%)</label><input type="number" step="any" name="perdida_maxima_diaria_pct" value="{{ config.perdida_maxima_diaria_pct }}" /></div>
+      <div class="form-group"><label>Posiciones simultáneas máximas</label><input type="number" step="1" name="posiciones_simultaneas_max" value="{{ config.posiciones_simultaneas_max }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Períodos de cálculo de indicadores</div>
+      <div class="form-group"><label>EMA rápida</label><input type="number" step="1" name="ema_rapida" value="{{ config.ema_rapida }}" /></div>
+      <div class="form-group"><label>EMA media</label><input type="number" step="1" name="ema_media" value="{{ config.ema_media }}" /></div>
+      <div class="form-group"><label>EMA lenta</label><input type="number" step="1" name="ema_lenta" value="{{ config.ema_lenta }}" /></div>
+      <div class="form-group"><label>SMA tendencia</label><input type="number" step="1" name="sma_tendencia" value="{{ config.sma_tendencia }}" /></div>
+      <div class="form-group"><label>RSI período</label><input type="number" step="1" name="rsi_periodo" value="{{ config.rsi_periodo }}" /></div>
+      <div class="form-group"><label>ATR período</label><input type="number" step="1" name="atr_periodo" value="{{ config.atr_periodo }}" /></div>
+      <div class="form-group"><label>HV Rank período (proxy de IVR)</label><input type="number" step="1" name="hv_periodo" value="{{ config.hv_periodo }}" /></div>
+      <div class="form-group"><label>MACD rápida</label><input type="number" step="1" name="macd_rapida" value="{{ config.macd_rapida }}" /></div>
+      <div class="form-group"><label>MACD lenta</label><input type="number" step="1" name="macd_lenta" value="{{ config.macd_lenta }}" /></div>
+      <div class="form-group"><label>MACD signal</label><input type="number" step="1" name="macd_signal" value="{{ config.macd_signal }}" /></div>
+      <div class="form-group"><label>Bollinger Bands período</label><input type="number" step="1" name="bb_periodo" value="{{ config.bb_periodo }}" /></div>
+      <div class="form-group"><label>Bollinger Bands desviación</label><input type="number" step="any" name="bb_desviacion" value="{{ config.bb_desviacion }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Velas a descargar por timeframe</div>
+      <div class="form-group"><label>5 minutos</label><input type="number" step="1" name="velas_5m" value="{{ config.velas_5m }}" /></div>
+      <div class="form-group"><label>15 minutos</label><input type="number" step="1" name="velas_15m" value="{{ config.velas_15m }}" /></div>
+      <div class="form-group"><label>4 horas</label><input type="number" step="1" name="velas_4h" value="{{ config.velas_4h }}" /></div>
+      <div class="form-group"><label>Diarias</label><input type="number" step="1" name="velas_diarias" value="{{ config.velas_diarias }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Volumen</div>
+      <div class="form-group"><label>RelVol — período de promedio</label><input type="number" step="1" name="relvol_periodo" value="{{ config.relvol_periodo }}" /></div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Guardia de datos insuficientes</div>
+      <div class="form-group">
+        <label>Mínimo de criterios calculables (si no, DESCARTAR automático)</label>
+        <input type="number" step="1" name="min_criterios_calculables" value="{{ config.min_criterios_calculables }}" />
+      </div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Slippage</div>
+      <div class="form-group">
+        <label>Slippage por lado (bps)</label>
+        <input type="number" step="any" name="slippage_bps" value="{{ config.slippage_bps }}" />
+      </div>
+    </div>
+
+    <div style="display:flex;align-items:center;gap:12px;margin-bottom:40px;">
+      <button type="submit" class="btn btn-primary">Guardar y activar</button>
+      <span style="font-size:12px;color:var(--text-muted);">
+        Aplica desde el próximo CSV — sin reiniciar el servidor.
+      </span>
+    </div>
+
+  </form>
+
+</div>
+
+{% if request.query_params.get("saved") %}
+<div style="position:fixed;bottom:24px;right:24px;background:#166534;color:#bbf7d0;
+            padding:12px 20px;border-radius:var(--radius);font-size:13px;font-weight:600;
+            box-shadow:0 4px 20px rgba(0,0,0,.4);">
+  ✓ Configuración guardada y activa
+</div>
+<script>setTimeout(()=>document.querySelector('[style*="position:fixed"]').remove(), 4000)</script>
+{% endif %}
+
+{% endblock %}

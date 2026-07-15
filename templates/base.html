@@ -270,6 +270,7 @@
     <div class="nav-links">
       <a href="/" {% if request.url.path == "/" %}class="active"{% endif %}>Dashboard</a>
       <a href="/scan/history" {% if "/history" in request.url.path %}class="active"{% endif %}>Historial</a>
+      <a href="/config" {% if request.url.path == "/config" %}class="active"{% endif %}>Parámetros</a>
       <a href="/settings" {% if "/settings" in request.url.path %}class="active"{% endif %}>Configuración</a>
     </div>
     <div class="nav-right">

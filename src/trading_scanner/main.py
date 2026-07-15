@@ -25,6 +25,7 @@ from fastapi.templating import Jinja2Templates
 
 from rich.console import Console
 
+from .api.config import router as config_router
 from .api.scan import _dedupe_latest_por_ticker
 from .api.scan import router as scan_router
 from .api.schwab import router as schwab_router
@@ -35,7 +36,6 @@ from .database import db
 from .fetchers.schwab_client import estado_conexion
 from .ingest.csv_parser import parse_csv
 from .ingest.csv_watcher import CSVWatcher
-from .models import ScanConfig
 
 console = Console()
 
@@ -64,10 +64,10 @@ async def lifespan(app: FastAPI):
 
     # ── CSV Watcher con pipeline callback ─────────────────────────────────
     loop = asyncio.get_event_loop()
-    config = ScanConfig()
 
     async def _pipeline_callback(tickers):
-        from .pipeline import run_pipeline
+        from .pipeline import get_active_config, run_pipeline
+        config = await get_active_config()
         results = await run_pipeline(tickers, config)
         app.state.latest_results = results
 
@@ -108,6 +108,7 @@ app.include_router(scan_router)
 app.include_router(settings_router)
 app.include_router(schwab_router)
 app.include_router(ticker_router)
+app.include_router(config_router)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────

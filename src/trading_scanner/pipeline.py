@@ -11,6 +11,7 @@ Flujo por ticker (en paralelo con asyncio.gather):
 """
 
 import asyncio
+import json
 import traceback
 from datetime import date, datetime
 from typing import Optional
@@ -29,6 +30,22 @@ from .indicators.volume import calc_atr_pct, calc_avg_volume, calc_hv_rank, calc
 from .models import FuenteDatos, ScanConfig, ScanResult, TickerBasico
 
 console = Console()
+
+
+async def get_active_config() -> ScanConfig:
+    """Config activa: la última guardada desde /config en Turso, o los
+    defaults de ScanConfig si todavía no se guardó ninguna. Se llama en
+    cada scan (no una sola vez al arrancar) para que un cambio en /config
+    aplique al próximo CSV sin reiniciar el servidor."""
+    try:
+        row = await db.get_latest_scan_config()
+    except Exception:
+        row = None
+    if not row:
+        return ScanConfig()
+    snapshot = row.get("config_snapshot")
+    data = json.loads(snapshot) if isinstance(snapshot, str) else snapshot
+    return ScanConfig(**data)
 
 _EMPTY_DF = pl.DataFrame(schema={
     "timestamp": pl.Datetime("ms"),

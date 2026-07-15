@@ -19,7 +19,6 @@ from ..config import settings
 from ..database import db
 from ..fetchers.schwab_client import estado_conexion
 from ..ingest.csv_parser import parse_csv
-from ..models import ScanConfig
 
 router = APIRouter(prefix="/scan", tags=["Scan"])
 
@@ -114,7 +113,7 @@ async def get_history(request: Request):
 
 @router.post("/upload")
 async def upload_csv(request: Request, file: UploadFile = File(...)):
-    from ..pipeline import run_pipeline
+    from ..pipeline import get_active_config, run_pipeline
 
     content = await file.read()
 
@@ -127,7 +126,7 @@ async def upload_csv(request: Request, file: UploadFile = File(...)):
     finally:
         tmp_path.unlink(missing_ok=True)
 
-    config = ScanConfig()
+    config = await get_active_config()
     results = await run_pipeline(tickers, config)
     request.app.state.latest_results = results
 
