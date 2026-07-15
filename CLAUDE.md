@@ -57,12 +57,34 @@ MOCK_SCHWAB=true uv run uvicorn trading_scanner.main:app --host 0.0.0.0 --port 8
 ## ESTADO ACTUAL DEL PROYECTO
 
 ```
-Sprint 1 — Ingesta CSV + Schwab API + evaluador básico   [ ] pendiente
-Sprint 2 — Dashboard + clasificación + integración cal.  [ ] pendiente
-Sprint 3 — Persistencia + backtesting                    [ ] pendiente
+Sprint 1 — Ingesta CSV + Schwab API + evaluador básico   [x] validado con datos reales
+Sprint 2 — Dashboard + clasificación + integración cal.  [~] avanzado (falta streaming WebSocket)
+Sprint 3 — Persistencia + backtesting                    [~] persistencia lista, backtesting sin empezar
 Sprint 4 — Optimizador de parámetros                     [ ] pendiente
 Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futuro lejano)
 ```
+
+**Qué quedó realmente andando (validado con Schwab real conectado, no solo mock):**
+- Ingesta de CSV de ToS robusta: normalización de nombres de columna (case/guion-bajo insensible),
+  cascada de fallback para variación diaria (Change% → Net Chng → Extended Session % Change →
+  Extended Session Net Change — ToS reporta 0 en columnas "Regular Trading Hours" durante pre-market),
+  columnas opcionales (Bid/Ask/Description/Market Cap) para uso futuro.
+- Conexión Schwab real vía flujo OAuth2 de webapp (`/schwab/connect`), sin `setup_wizard.py`
+  (nunca se implementó, quedó solo documentado — ver sección de autenticación actualizada abajo).
+- Badge de estado de conexión en el header (MOCK / ON_LINE / DESCONECTADO / SIN_CREDENCIALES),
+  con verificación real contra Schwab (no solo que el token cargue), cache de 5 min, e inferencia
+  de vencimiento por edad del token (~7 días) sin gastar llamadas a Schwab innecesariamente.
+- Toggle de modo mock desde `/settings` sin reiniciar el servidor.
+- Evaluador: además de los 7 criterios, un gate de **filtros de entrada** (`_validar_filtros_entrada`)
+  que descarta tickers no operables (precio, volumen, ATR%, RelVol, spread bid/ask) antes de gastar
+  los 7 criterios — ver sección del evaluador actualizada.
+- `atr_pct`, `relvol` e IVR (proxy HV Rank) se calculan de las velas de Schwab, no del CSV — el CSV
+  de ToS no siempre trae esas columnas confiablemente.
+- Página de detalle por ticker (`/ticker/{ticker}`) con desglose de los 7 criterios recalculados
+  desde el `config_snapshot` persistido.
+- Página de Parámetros (`/config`) — formulario completo de `ScanConfig`, guarda en la tabla
+  `scan_configs` de Turso; el pipeline usa `pipeline.get_active_config()` (última config guardada)
+  en cada scan, no una copia fija al arrancar el servidor.
 
 **Actualizar esta sección al completar cada sprint.**
 
@@ -118,11 +140,11 @@ Cada elección está tomada. No proponer alternativas salvo que una librería es
 ┌──────────────────────────┐  ┌────────────────────────────┐
 │  SCHWAB REST API          │  │  SCHWAB STREAMING          │
 │  schwab_history.py        │  │  schwab_stream.py          │
-│  Una sola descarga por    │  │  WebSocket persistente     │
-│  ticker al inicio:        │  │  Una conexión para todos   │
-│  - velas 5m/15m/4h/d     │  │  los tickers suscritos     │
-│  - option chain (IVR)     │  │  Schwab pushea: precio,    │
-│                           │  │  bid/ask, volumen, ticks   │
+│  Una sola descarga por    │  │  NO IMPLEMENTADO todavía   │
+│  ticker al inicio:        │  │  (Sprint 2 pendiente) —    │
+│  - velas 5m/15m/4h/d     │  │  el dashboard hoy solo      │
+│  - HV Rank (proxy IVR,   │  │  actualiza vía polling      │
+│    no option chain real) │  │  HTMX cada 30s, no ticks   │
 └──────────────┬────────────┘  └─────────────┬──────────────┘
                │                             │
                └──────────────┬──────────────┘
@@ -180,15 +202,20 @@ Cada elección está tomada. No proponer alternativas salvo que una librería es
 │                  FASTAPI BACKEND                         │
 │  POST /scan/upload        → recibir CSV de ToS          │
 │  GET  /scan/latest        → último scan del día         │
+│  GET  /scan/partial       → tabla HTMX (polling 30s)     │
 │  GET  /scan/history       → historial de scans          │
-│  GET  /ticker/{ticker}    → detalle de un ticker        │
-│  GET  /stream/status      → estado WebSocket + tickers  │
-│  GET  /config             → configuración actual        │
-│  POST /config             → guardar nueva config        │
-│  POST /backtest/run       → lanzar backtest             │
-│  GET  /backtest/{id}      → resultados de un backtest   │
-│  GET  /optimize/run       → lanzar optimizador Optuna   │
-│  GET  /settings           → página de configuración     │
+│  GET  /ticker/{ticker}    → detalle + desglose criterios│
+│  GET  /config             → form de ScanConfig activa   │
+│  POST /config             → guardar y activar config    │
+│  GET  /schwab/connect     → paso 1/2 login OAuth2 Schwab│
+│  POST /schwab/connect     → completar login (pegar URL) │
+│  GET  /settings           → credenciales + estado + mock│
+│  POST /settings/mock      → toggle modo mock en caliente│
+│                                                           │
+│  Pendientes (Sprint 2/3/4):                              │
+│  GET  /stream/status      → NO IMPLEMENTADO (sin stream) │
+│  POST /backtest/run       → NO IMPLEMENTADO              │
+│  GET  /optimize/run       → NO IMPLEMENTADO              │
 └──────────────────────────┬──────────────────────────────┘
                            │
                            ▼
@@ -217,7 +244,7 @@ trading-scanner/
 ├── .env                               ← credenciales reales — NUNCA al repo
 ├── README.md
 │
-├── setup.bat                          ← instalación inicial + setup wizard (Windows)
+├── setup.bat                          ← uv sync + copia .env.example → .env (sin wizard interactivo)
 ├── iniciar.bat                        ← arrancar el sistema diariamente (Windows)
 ├── actualizar.bat                     ← git pull + uv sync (Windows)
 │
@@ -244,59 +271,54 @@ trading-scanner/
 │       │   └── csv_parser.py          ← parsea el CSV de ToS → lista de tickers con métricas
 │       │
 │       ├── fetchers/
-│       │   ├── schwab_client.py       ← wrapper schwab-py: auth OAuth2, token refresh
-│       │   ├── schwab_history.py      ← REST API: velas históricas 5m/15m/4h/diario (pre-market)
-│       │   ├── schwab_options.py      ← REST API: option chain → calcular IVR
-│       │   ├── schwab_stream.py       ← WebSocket streaming: suscripción y recepción de ticks
-│       │   ├── market_data_cache.py   ← cache en memoria: estado actual de cada ticker suscrito
-│       │   ├── history_cache.py       ← lee/escribe parquet local — abstrae la fuente de datos
+│       │   ├── schwab_client.py       ← auth OAuth2 (login webapp), token refresh, estado_conexion(),
+│       │   │                            info_token(), horario hábil + feriados NYSE (vía Trading Calendar)
+│       │   ├── schwab_history.py      ← REST API: velas históricas 5m/15m/4h/diario (Polars — ojo con
+│       │   │                            `.group_by()`, no `.groupby()` que es API de pandas)
+│       │   ├── schwab_options.py      ← REST API: option chain. get_ivr() real queda sin usar en el
+│       │   │                            pipeline — Schwab no expone el rango de 52 semanas de IV
+│       │   │                            implícita, solo IV actual y rango de 52 semanas de PRECIO.
+│       │   ├── schwab_stream.py       ← NO IMPLEMENTADO — streaming WebSocket sigue siendo Sprint 2 pendiente
+│       │   ├── market_data_cache.py   ← NO IMPLEMENTADO — depende de schwab_stream.py
+│       │   ├── history_cache.py       ← existe, cache de Parquet — todavía no lo usa nada (backtest sin empezar)
 │       │   └── calendar_client.py    ← GET localhost:8000/events/{ticker}/24h
 │       │
 │       ├── indicators/
 │       │   ├── trend.py               ← EMA 9/21/50, SMA 200, VWAP, cruces
 │       │   ├── momentum.py            ← RSI 14, MACD (12,26,9), Stochastic RSI
-│       │   └── volume.py              ← RelVol, ATR 14, Bollinger Bands, OBV
+│       │   └── volume.py              ← RelVol, ATR%, volumen promedio, HV Rank (proxy de IVR), OBV
 │       │
 │       ├── engine/
-│       │   ├── evaluator.py           ← motor puro: recibe datos + config → score day/swing
+│       │   ├── evaluator.py           ← motor puro: filtros de entrada + 7 criterios → score day/swing.
+│       │   │                            `desglosar_criterios()` recalcula los 7 para auditar un ScanResult ya persistido
 │       │   ├── criteria.py            ← los 7 criterios como funciones puras
 │       │   └── signals.py             ← detección de señales técnicas (cruce EMA, ruptura, pullback)
 │       │
-│       ├── backtest/
-│       │   ├── runner.py              ← corre el evaluador contra datos históricos
-│       │   ├── simulator.py           ← simula gestión de posición: stop, target, trailing
-│       │   └── metrics.py             ← calcula win rate, R:R real, sharpe, max drawdown
+│       ├── backtest/                  ← NO EXISTE TODAVÍA — Sprint 3 sin empezar
 │       │
-│       ├── optimizer/
-│       │   └── optuna_search.py       ← Optuna: encuentra config óptima para el perfil
+│       ├── optimizer/                 ← NO EXISTE TODAVÍA — Sprint 4 sin empezar
 │       │
-│       ├── api/
-│       │   ├── scan.py                ← endpoints de scan (upload CSV, latest, history)
-│       │   ├── ticker.py              ← endpoint de detalle por ticker
-│       │   ├── config.py              ← endpoints de configuración
-│       │   ├── backtest.py            ← endpoints de backtesting
-│       │   └── settings.py            ← endpoints de settings (credenciales)
-│       │
-│       └── setup_wizard.py            ← wizard de configuración inicial
+│       └── api/
+│           ├── scan.py                ← scan (upload CSV, latest, partial, history) — usa
+│           │                            pipeline.get_active_config(), no ScanConfig() fijo
+│           ├── ticker.py              ← detalle por ticker + desglose de criterios
+│           ├── config.py              ← GET/POST /config — form completo de ScanConfig,
+│           │                            guarda en tabla scan_configs de Turso
+│           ├── schwab.py              ← GET/POST /schwab/connect — flujo de login OAuth2 webapp
+│           └── settings.py            ← credenciales + estado de servicios + toggle de modo mock
 │
 └── tests/
-    ├── unit/
-    │   ├── test_criteria.py          ← cada criterio como función pura
-    │   ├── test_evaluator_logic.py   ← clasificación con datos mock
-    │   └── test_config_validation.py ← edge cases de ScanConfig Pydantic
-    ├── integration/
-    │   ├── test_schwab_client.py     ← requiere credenciales sandbox
-    │   └── test_calendar_client.py   ← mock del calendar local
-    └── e2e/
-        └── test_csv_to_result.py     ← flujo completo con datos fixture
+    └── unit/                          ← test_csv_parser.py, test_evaluator.py, test_criteria.py,
+                                          test_indicators.py — no hay integration/ ni e2e/ todavía
 │
 ├── templates/
-│   ├── base.html                      ← layout con HTMX incluido como archivo local
+│   ├── base.html                      ← layout con HTMX; header con badge MOCK/ON_LINE/DESCONECTADO
 │   ├── dashboard.html                 ← tabla de candidatos del día con scores
-│   ├── ticker_detail.html             ← detalle de un ticker: indicadores + criterios
-│   ├── config.html                    ← formulario de ScanConfig con sliders
-│   ├── backtest.html                  ← resultados de backtest: métricas + curva de equity
-│   └── settings.html                  ← credenciales Schwab con feedback visual
+│   ├── ticker_detail.html             ← detalle de un ticker: desglose de criterios + indicadores
+│   ├── config.html                    ← formulario completo de ScanConfig (11 secciones)
+│   ├── schwab_connect.html            ← flujo de login OAuth2 (paso 1 link, paso 2 pegar URL)
+│   ├── history.html                   ← historial agrupado por fecha
+│   └── settings.html                  ← credenciales + estado de servicios + toggle mock
 │
 └── static/
     └── htmx.min.js                    ← HTMX local, sin CDN externo
@@ -325,8 +347,11 @@ class ScanConfig(BaseModel):
     creada_en: datetime = Field(default_factory=datetime.utcnow)
 
     # ── Filtros de entrada (equivalentes a los filtros de ToS) ──────────────
-    # Estos no se usan para filtrar el CSV (ToS ya filtró), sino para
-    # validar que el CSV cumple los criterios y para el backtesting histórico
+    # SÍ se aplican activamente — ver evaluator._validar_filtros_entrada().
+    # No filtran el CSV en sí (ToS ya filtró), sino que descartan un ticker
+    # directo (DESCARTAR, marcado FILTRO_ENTRADA:xxx) si no cumple el mínimo,
+    # antes de gastar los 7 criterios. También sirven de referencia para el
+    # backtesting histórico.
     precio_min: float = 5.0
     precio_max: float = 500.0
     volumen_promedio_min: int = 500_000
@@ -334,6 +359,7 @@ class ScanConfig(BaseModel):
     variacion_diaria_min_pct: float = 2.0
     relvol_min: float = 1.5
     atr_pct_min: float = 2.0
+    spread_max_pct: float = 1.0  # spread bid/ask máximo, % del precio — solo se evalúa si el CSV trae Bid/Ask
 
     # ── Umbrales de los criterios objetivos ─────────────────────────────────
     relvol_umbral_day: float = 3.0          # criterio 3: RelVol > X → day
@@ -341,6 +367,9 @@ class ScanConfig(BaseModel):
     relvol_umbral_swing_max: float = 3.0
     atr_pct_umbral_day: float = 3.0         # criterio 4: ATR% > X → day
     atr_pct_umbral_swing_min: float = 1.5   # criterio 4: ATR% entre X e Y → swing
+    atr_pct_umbral_swing_max: float = 3.0
+    ivr_umbral_compra: float = 30.0  # criterio 6: HV Rank < X → señal day
+    ivr_umbral_venta: float = 50.0   # criterio 6: HV Rank > X → señal swing
 
     # ── Pesos de los 7 criterios ─────────────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
@@ -349,7 +378,7 @@ class ScanConfig(BaseModel):
     peso_relvol: float = 1.0               # criterio 3
     peso_atr_pct: float = 1.0              # criterio 4
     peso_sma200: float = 1.0               # criterio 5
-    peso_ivr: float = 1.0                  # criterio 6
+    peso_ivr: float = 1.0                  # criterio 6 — en realidad pondera HV Rank, no IV Rank (ver más abajo)
     peso_capital: float = 1.0              # criterio 7
 
     # ── Umbral de decisión ──────────────────────────────────────────────────
@@ -373,6 +402,7 @@ class ScanConfig(BaseModel):
     sma_tendencia: int = 200
     rsi_periodo: int = 14
     atr_periodo: int = 14
+    hv_periodo: int = 20  # ventana de volatilidad histórica realizada — proxy de IVR (criterio 6)
     macd_rapida: int = 12
     macd_lenta: int = 26
     macd_signal: int = 9
@@ -385,9 +415,13 @@ class ScanConfig(BaseModel):
     velas_4h: int = 60        # ~3 meses
     velas_diarias: int = 252  # ~1 año
 
+    # ── Períodos de cálculo de volumen ───────────────────────────────────────
+    relvol_periodo: int = 50  # ventana para RelVol y volumen promedio (ambos de velas diarias de Schwab)
+
     # ── Guardia contra clasificaciones con datos insuficientes ───────────────
     # Si menos de N criterios pudieron calcularse → DESCARTAR automáticamente.
-    # Evita falsa confianza cuando faltan datos (ej: sin opciones → IVR None).
+    # Evita falsa confianza cuando faltan datos (ej: Schwab caído → sin velas
+    # → ni ATR%/RelVol/HV Rank/cruces EMA se pueden calcular).
     min_criterios_calculables: int = 4
 
     # ── Slippage para simulación realista ────────────────────────────────────
@@ -454,8 +488,12 @@ class ScanResult(BaseModel):
     macd_cruce_alcista_15m: Optional[bool] = None
     macd_cruce_alcista_d: Optional[bool] = None
 
-    # ── IVR (opciones) ───────────────────────────────────────────────────────
-    ivr: Optional[float] = None            # IV Rank actual
+    # ── IVR / HV Rank (criterio 6) ────────────────────────────────────────────
+    # Schwab no expone el rango de 52 semanas de volatilidad IMPLÍCITA (solo
+    # IV actual + rango de 52 semanas de PRECIO), así que esto en realidad es
+    # HV Rank — volatilidad histórica de precio rankeada contra el último año
+    # (ver indicators/volume.py::calc_hv_rank y pipeline.py::_calcular_ivr).
+    ivr: Optional[float] = None
     ivr_señal_day: Optional[bool] = None   # True si IVR no es determinante
     ivr_señal_swing: Optional[bool] = None # True si IVR < 30% o > 50%
 
@@ -585,6 +623,21 @@ Si len(criterios_calculados) < config.min_criterios_calculables:
 Un ticker con 1 criterio calculado y score 0.9/1.0 es más peligroso que uno con
 score 3.5/7.0 — la confianza alta con datos insuficientes es peor que la incertidumbre.
 
+**Regla 5.5 — Filtros de entrada antes de los 7 criterios:**
+```python
+def _validar_filtros_entrada(datos: DatosTickerCompletos, config: ScanConfig) -> list[str]:
+    # precio, variación diaria, ATR%, RelVol, volumen promedio, spread bid/ask
+    # devuelve la lista de nombres de filtros violados (vacía = pasa)
+```
+Corre **antes** de los 7 criterios (antes incluso de la Regla 5). Si el ticker no cumple algún
+mínimo de `ScanConfig` (`precio_min/max`, `variacion_diaria_min_pct`, `atr_pct_min`, `relvol_min`,
+`volumen_promedio_min`, `spread_max_pct`), se descarta directo con `criterios_incompletos =
+["FILTRO_ENTRADA:xxx", ...]`, sin gastar los 7 criterios. Si un dato puntual no está disponible
+(ej. sin Bid/Ask en el CSV), ese filtro en particular simplemente no se evalúa — no bloquea por
+ausencia de dato, solo por violación real de un dato que sí existe. Ejemplo real: un ADR de baja
+liquidez con spread bid/ask >2% del precio se descartaba igual con los 7 criterios "viendo bien"
+técnicamente — este gate existe específicamente para atrapar ese caso.
+
 **Regla 6 — Clasificación por umbral relativo:**
 ```
 score_day_ponderado   = score_day   * peso_total_calculable
@@ -604,16 +657,39 @@ else:
 
 ## FLUJO DE INGESTA DEL CSV
 
-### Formato de salida de ThinkOrSwim
+### Cómo llega realmente el CSV — no hay export directo desde ToS
 
-El CSV exportado por ToS tiene columnas configurables. El ThinkScript del scanner
-debe exportar exactamente estas columnas (se documenta el script en el README):
+ThinkOrSwim **no permite descargar/exportar** los resultados del Stock Hacker directamente. El
+flujo real del trader es: seleccionar todas las filas del scan, copiar, pegar en Notepad, agregar
+a mano una primera fila con los nombres de columna (en el mismo orden que las columnas configuradas
+en la grilla de ToS), y guardar como `.csv`. Es tab-separado (lo que ToS pega), y a simple vista en
+Notepad las columnas casi nunca quedan alineadas visualmente — es normal, Notepad usa tabs de ancho
+fijo mientras el texto de cada celda tiene largo distinto. Lo que importa es que cada fila tenga la
+misma cantidad de tabs en el mismo orden que el header, no cómo se ve en pantalla.
 
-```
-Symbol, Last, Change%, Volume, Rel Volume, ATR%, Avg Volume
-```
+### Columnas — obligatorias vs opcionales vs con fallback
 
-El `csv_parser.py` lee este formato y devuelve una lista de `TickerBasico`:
+Obligatorias: `Symbol`, `Last`, `Volume`. Además se necesita **al menos una** columna de variación
+diaria (ver cascada abajo) o `parse_csv()` lanza `ValueError` explícito en vez de seguir con todo en 0.0.
+
+**Columnas recomendadas (no obligatorias, pero hoy se usan)**: `Description`, `Bid`, `Ask`, `Market Cap`,
+`Vol Index` (alias de Rel Volume). `ATR%`/`Avg Volume` **ya no hace falta** que estén en el CSV — se
+calculan de las velas de Schwab (ver "El evaluador" más abajo), el CSV solo los usa como fallback si
+Schwab no responde.
+
+**Cascada de fallback para variación diaria** (`csv_parser._variacion_diaria`) — ToS reporta 0 en
+columnas de "Regular Trading Hours" durante pre-market (la sesión regular todavía no arrancó):
+1. `Change%` (Regular Trading Hours) — sirve una vez abierto el mercado.
+2. `Net Chng` (regular) reconstruido con `Last`: `precio_anterior = Last - NetChng`.
+3. `Extended Session Percent Change` — pensada específicamente para pre-market/after-hours.
+4. `Extended Session Net Change` reconstruido con `Last`, igual que el punto 2.
+
+**Normalización de nombres de columna** (`_normalize_alias`): case-insensitive y trata `_` y espacio
+como equivalentes. El usuario puede escribir `Vol Index`, `vol_index` o `VOL_INDEX` en el header que
+arma a mano — cualquiera funciona, no hace falta coincidencia exacta con el nombre "oficial" de ToS.
+También tolera nombres acortados de las columnas Extended Session (ej. sin la palabra final "Change").
+
+El `csv_parser.py` devuelve una lista de `TickerBasico`:
 
 ```python
 class TickerBasico(BaseModel):
@@ -624,6 +700,10 @@ class TickerBasico(BaseModel):
     relvol: float
     atr_pct: float
     volumen_promedio: int
+    bid: Optional[float] = None
+    ask: Optional[float] = None
+    descripcion: Optional[str] = None
+    market_cap_millones: Optional[float] = None  # parsea sufijos M/B de ToS
 ```
 
 ### CSV Watcher
@@ -667,6 +747,19 @@ async def get_warning(ticker: str) -> CalendarWarning:
 Si el calendar no está corriendo, el scanner continúa sin esa información.
 Los campos `warning_calendar` y catalizadores quedan en None y se agregan a `criterios_incompletos`.
 **Nunca bloquear el scan por falta del calendar.**
+
+**Segundo uso del Calendar — feriados NYSE para el horario hábil de Schwab:**
+```python
+# schwab_client.py
+GET {calendar_base_url}/calendar/holidays/{year}  →  {"year": 2026, "holidays": ["2026-01-01", ...]}
+```
+Usado por `_en_horario_habil()` para decidir si vale la pena verificar la conexión Schwab en vivo
+(ver "Autenticación Schwab" arriba). Mismo principio de resiliencia: si el Calendar no responde,
+cae a una lista fija local (`FERIADOS_NYSE_FALLBACK`) — nunca bloquea. Otros endpoints de Calendar
+disponibles pero sin usar todavía en el scanner: `/calendar/is-business-day/{date}`,
+`/calendar/next-business-day/{date}`, `/calendar/prev-business-day/{date}`,
+`/calendar/add-business-days/{date}/{n}` (`_check_calendar()` en `api/settings.py` usa
+`is-business-day` solo como health-check liviano, no `/health` — ese endpoint no existe en Calendar).
 
 ---
 
@@ -778,15 +871,50 @@ Si el WebSocket se desconecta (pérdida de red, timeout de Schwab):
 
 ## AUTENTICACIÓN SCHWAB
 
-schwab-py usa OAuth2. El flujo de primera autenticación requiere abrir un browser.
-Esto se maneja en el setup wizard — el usuario autentica una vez y el token se guarda localmente.
+> **`setup_wizard.py` documentado en versiones anteriores de este archivo NUNCA se implementó.**
+> El flujo real es el que sigue — vía web, integrado al dashboard, no vía CLI/wizard de instalación.
+
+schwab-py no soporta un flujo de login automático viable dentro de un handler async de FastAPI
+(`client_from_login_flow` es bloqueante, levanta un servidor local y abre un browser controlado por
+la librería). Se usa en cambio el par de funciones que schwab-py expone explícitamente para
+integrarse en workflows de webapp:
 
 ```
-setup.bat → setup_wizard.py → schwab_client.py.setup() → abre browser → usuario autoriza → token guardado
+GET  /schwab/connect  → genera authorization_url (schwab_auth.get_auth_context), la muestra al
+                         usuario para que haga login + 2FA en una pestaña nueva
+POST /schwab/connect  → el usuario pega la URL de redirect completa (aunque el browser muestre
+                         error de conexión al llegar a la URL de callback, es esperado — no hay
+                         nada corriendo ahí). schwab_auth.client_from_received_url() intercambia
+                         el code por el token y lo persiste.
 ```
 
-El token se refresca automáticamente en background. Si el refresh falla (sesión expirada),
-el scanner muestra un warning en el dashboard con link a `/settings` para re-autenticar.
+Implementado en `fetchers/schwab_client.py` (`iniciar_conexion()`, `completar_conexion()`) y
+`api/schwab.py`. Errores esperables al pegar una URL vieja/repetida: `MismatchingStateError`
+(el `state` OAuth no coincide — pasa si se recarga `/schwab/connect` entre el paso 1 y el paso 2,
+generando un link nuevo con `state` distinto al que finalmente se pega).
+
+**Vencimiento del token — no lo documenta oficialmente Schwab:** el `refresh_token` deja de ser
+aceptado por Schwab ~7 días después de la autorización manual (confirmado empíricamente: un token
+de 21 días fue rechazado con `invalid_grant`). `REFRESH_TOKEN_MAX_AGE_DIAS = 7` en `schwab_client.py`
+infiere el vencimiento por la edad del token (guardada en `creation_timestamp` dentro del propio
+archivo del token) **sin gastar una llamada a Schwab** para tokens ya sabidos vencidos.
+
+**Estado de conexión (`estado_conexion()`)** — única fuente de verdad, usada por el badge del header
+en todas las páginas: `"MOCK"` | `"SIN_CREDENCIALES"` | `"ON_LINE"` | `"DESCONECTADO"`. Hace una
+llamada real y liviana (`client.get_account_numbers()` — solo hashes de cuenta, sin saldos/posiciones)
+para confirmar que Schwab acepta el token, no solo que el archivo cargue. Esto tiene 3 capas de
+protección contra golpear a Schwab de más:
+1. Si el token ya tiene ≥7 días, ni siquiera intenta la llamada real (ver arriba).
+2. Cache de 5 minutos (`_ESTADO_CACHE_TTL`) — no repite la llamada real en cada carga de página.
+3. Fuera de horario hábil (ver más abajo), no refresca el cache aunque haya vencido — reusa el
+   último valor conocido sin tocar la red.
+
+**Horario hábil (`_en_horario_habil()`)** — ventana 7:00–17:00 hora de Nueva York (`ZoneInfo`,
+evita calcular a mano el offset con Argentina que cambia con el horario de verano/invierno de
+EE.UU.), lunes a viernes, sin feriados NYSE. Los feriados se consultan a Trading Calendar
+(`GET {calendar_base_url}/calendar/holidays/{year}`, cacheado por año en memoria) con fallback a
+una lista fija local (`FERIADOS_NYSE_FALLBACK`) si el Calendar no responde — mismo principio que
+`calendar_client.py`: nunca bloquear por su ausencia.
 
 **El token de Schwab NUNCA va al repositorio.** Se guarda en `%APPDATA%/trading-scanner/schwab_token.json`
 (Windows). Usar `%APPDATA%` y no la carpeta del proyecto es una buena práctica de seguridad en Windows
@@ -822,6 +950,10 @@ SCANNER_PORT=8001
 
 # Carpeta de input para CSV de ToS
 INPUT_FOLDER=./input
+
+# Modo mock: datos OHLCV sintéticos, sin necesitar Schwab real (default false)
+# También se puede togglear en caliente desde /settings sin editar .env ni reiniciar
+MOCK_SCHWAB=false
 ```
 
 ### Pydantic Settings — config.py
@@ -842,6 +974,7 @@ class Settings(BaseSettings):
     calendar_base_url: str = "http://localhost:8000"
     scanner_port: int = 8001
     input_folder: str = "./input"
+    mock_schwab: bool = False
 
 settings = Settings()
 ```
@@ -975,31 +1108,26 @@ PARTIAL_SCALE:
 
 ---
 
-## THINKSCRIPT — SCANNER DE ToS
+## SCANNER DE ToS — SIN ThinkScript, WORKFLOW MANUAL
 
-El archivo `tos_scanner.ts` en la raíz del repositorio contiene el ThinkScript
-que el trader importa en ToS. Este script replica los filtros del sistema:
+> **`tos_scanner.ts` documentado en versiones anteriores de este archivo NUNCA se creó.**
+> ToS no permite exportar el Stock Hacker directamente (ver "Cómo llega realmente el CSV" arriba) —
+> el trader configura las columnas de la grilla a mano en ToS, copia/pega a Notepad, agrega el
+> header manualmente y guarda como `.csv`. No hay ThinkScript que generar ni sincronizar.
 
-```thinkscript
-# Trading Scanner — ThinkScript
-# Importar en ToS: Scan → Personal → Import
+**Columnas recomendadas para configurar en la grilla del Stock Hacker** (nombres tal cual los usa
+ToS por default — el parser tolera mayúsculas/minúsculas y `_` en vez de espacio si el trader
+renombra la columna al armar el header a mano):
 
-# Filtros aplicados (ajustables desde el script):
-# - Precio: $5 a $500
-# - Volumen promedio: > 500.000
-# - Float: > 10M
-# - Variación diaria: > 2% o < -2%
-# - Relative Volume: > 1.5x
-# - ATR%: > 2%
-# - Excluir: earnings ± 1 día (a menos que haya estrategia de opciones)
-
-# Columnas de export:
-# Symbol, Last, Change%, Volume, Rel Volume, ATR%, Avg Volume
+```
+Symbol, Description, Last, Extended Session Percent Change, Extended Session Net Change,
+Volume, Bid, Ask, Vol Index, Market Cap
 ```
 
-El script se mantiene sincronizado con los filtros de `ScanConfig`.
-Si el trader cambia los umbrales en la config del sistema, debe actualizar el ThinkScript manualmente.
-**Sprint futuro:** generar el ThinkScript automáticamente desde la config.
+Los filtros de calidad de candidatos (precio, volumen, ATR%, RelVol, variación diaria) los aplica
+el Stock Hacker de ToS del lado del trader (fuera del alcance de este repo), y el scanner los
+**vuelve a validar** él mismo con `ScanConfig` como red de seguridad (`evaluator._validar_filtros_entrada`,
+ver más arriba) — por si el scan de ToS quedó mal configurado o algún candidato se cuela igual.
 
 ---
 
@@ -1026,7 +1154,8 @@ Si el trader cambia los umbrales en la config del sistema, debe actualizar el Th
 
 - **No usar requests** — siempre httpx async
 - **No crear SQLite local** — siempre Turso (libSQL cloud)
-- **No pedirle al usuario que edite .env manualmente** — usar setup wizard o /settings
+- **No pedirle al usuario que edite .env manualmente** — usar `/settings` (credenciales) o `/config`
+  (parámetros de `ScanConfig`, guardados en Turso vía `/config`, no en `.env`)
 - **No mostrar tokens o credenciales completos en pantalla** — solo últimos 4 caracteres
 - **No duplicar la lógica de eventos** — siempre consultar el Trading Calendar via HTTP
 - **No instalar npm ni crear package.json** — HTMX se incluye como archivo estático local
