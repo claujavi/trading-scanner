@@ -4,6 +4,9 @@
 # Datos históricos cachados
 backtest_data/
 
+# Documentación propietaria de Schwab (PDFs de referencia, no distribuir)
+docs/schwab-api/*.pdf
+
 # Token de Schwab (Windows %APPDATA%)
 %APPDATA%/trading-scanner/
 # La carpeta real está en %APPDATA%/trading-scanner/ pero aquí solo nos importa .env

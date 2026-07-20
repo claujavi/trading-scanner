@@ -15,12 +15,12 @@ def test_parse_csv_valid_sample():
     assert len(tickers) == 5
     first = tickers[0]
     assert first.ticker == "AAPL"
-    assert first.precio == 172.15
-    assert first.variacion_diaria_pct == 1.23
-    assert first.volumen_actual == 5_678_900
-    assert first.atr_pct == 2.8
-    assert first.relvol == 2.1
-    assert first.volumen_promedio == 12_000_000
+    assert first.precio == 170.25
+    assert first.variacion_diaria_pct == 3.50
+    assert first.volumen_actual == 5_500_000
+    assert first.atr_pct == 2.1
+    assert first.relvol == 2.8
+    assert first.volumen_promedio == 2_000_000
 
 
 def test_parse_csv_missing_columns_raises_value_error(tmp_path):

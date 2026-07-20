@@ -75,13 +75,18 @@ Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futu
   con verificación real contra Schwab (no solo que el token cargue), cache de 5 min, e inferencia
   de vencimiento por edad del token (~7 días) sin gastar llamadas a Schwab innecesariamente.
 - Toggle de modo mock desde `/settings` sin reiniciar el servidor.
-- Evaluador: además de los 7 criterios, un gate de **filtros de entrada** (`_validar_filtros_entrada`)
+- Evaluador: además de los 6 criterios, un gate de **filtros de entrada** (`_validar_filtros_entrada`)
   que descarta tickers no operables (precio, volumen, ATR%, RelVol, spread bid/ask) antes de gastar
-  los 7 criterios — ver sección del evaluador actualizada.
+  los 6 criterios — ver sección del evaluador actualizada.
 - `atr_pct`, `relvol` e IVR (proxy HV Rank) se calculan de las velas de Schwab, no del CSV — el CSV
   de ToS no siempre trae esas columnas confiablemente.
-- Página de detalle por ticker (`/ticker/{ticker}`) con desglose de los 7 criterios recalculados
+- Página de detalle por ticker (`/ticker/{ticker}`) con desglose de los 6 criterios recalculados
   desde el `config_snapshot` persistido.
+- **Capital ya no es un 7mo criterio puntuado** — se detectó que `criterio_capital()` estaba
+  hardcodeado a devolver siempre `(1.0, 0.0)`, sesgando cada evaluación hacia DAY sin mirar ningún
+  dato (causa raíz de 0 señales SWING en el primer backtest de 1 mes). Se corrigió a lo que decía
+  la especificación original: "capital limitado" es un **desempate** aplicado solo cuando
+  `score_day == score_swing` tras evaluar los 6 criterios objetivos — ver Regla 6 más abajo.
 - Página de Parámetros (`/config`) — formulario completo de `ScanConfig`, guarda en la tabla
   `scan_configs` de Turso; el pipeline usa `pipeline.get_active_config()` (última config guardada)
   en cada scan, no una copia fija al arrancar el servidor.
@@ -172,7 +177,7 @@ Cada elección está tomada. No proponer alternativas salvo que una librería es
 ┌─────────────────────────────────────────────────────────┐
 │              EVALUATOR ENGINE (puro)                     │
 │   - Recibe: snapshot del cache + eventos + ScanConfig   │
-│   - Calcula: 7 criterios con pesos configurables        │
+│   - Calcula: 6 criterios con pesos configurables        │
 │   - Devuelve: score_day, score_swing, clasificación     │
 │   - NO sabe si los datos son live o históricos          │
 │   - Sin side effects — función pura y testeable         │
@@ -289,9 +294,9 @@ trading-scanner/
 │       │   └── volume.py              ← RelVol, ATR%, volumen promedio, HV Rank (proxy de IVR), OBV
 │       │
 │       ├── engine/
-│       │   ├── evaluator.py           ← motor puro: filtros de entrada + 7 criterios → score day/swing.
-│       │   │                            `desglosar_criterios()` recalcula los 7 para auditar un ScanResult ya persistido
-│       │   ├── criteria.py            ← los 7 criterios como funciones puras
+│       │   ├── evaluator.py           ← motor puro: filtros de entrada + 6 criterios → score day/swing.
+│       │   │                            `desglosar_criterios()` recalcula los 6 para auditar un ScanResult ya persistido
+│       │   ├── criteria.py            ← los 6 criterios como funciones puras
 │       │   └── signals.py             ← detección de señales técnicas (cruce EMA, ruptura, pullback)
 │       │
 │       ├── backtest/                  ← NO EXISTE TODAVÍA — Sprint 3 sin empezar
@@ -350,7 +355,7 @@ class ScanConfig(BaseModel):
     # SÍ se aplican activamente — ver evaluator._validar_filtros_entrada().
     # No filtran el CSV en sí (ToS ya filtró), sino que descartan un ticker
     # directo (DESCARTAR, marcado FILTRO_ENTRADA:xxx) si no cumple el mínimo,
-    # antes de gastar los 7 criterios. También sirven de referencia para el
+    # antes de gastar los 6 criterios. También sirven de referencia para el
     # backtesting histórico.
     precio_min: float = 5.0
     precio_max: float = 500.0
@@ -371,15 +376,16 @@ class ScanConfig(BaseModel):
     ivr_umbral_compra: float = 30.0  # criterio 6: HV Rank < X → señal day
     ivr_umbral_venta: float = 50.0   # criterio 6: HV Rank > X → señal swing
 
-    # ── Pesos de los 7 criterios ─────────────────────────────────────────────
+    # ── Pesos de los 6 criterios objetivos ────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
+    # Capital NO es un criterio puntuado acá — es el desempate que aplica
+    # evaluator._clasificar() cuando score_day == score_swing (Regla 6 abajo).
     peso_timeframe_setup: float = 1.0       # criterio 1
     peso_catalizador: float = 1.0           # criterio 2
     peso_relvol: float = 1.0               # criterio 3
     peso_atr_pct: float = 1.0              # criterio 4
     peso_sma200: float = 1.0               # criterio 5
     peso_ivr: float = 1.0                  # criterio 6 — en realidad pondera HV Rank, no IV Rank (ver más abajo)
-    peso_capital: float = 1.0              # criterio 7
 
     # ── Umbral de decisión ──────────────────────────────────────────────────
     umbral_decision: float = 4.0  # score mínimo (sobre total ponderado) para clasificar
@@ -436,13 +442,21 @@ class ScanConfig(BaseModel):
 class Clasificacion(str, Enum):
     DAY      = "DAY"
     SWING    = "SWING"
-    AMBIGUO  = "AMBIGUO"   # empate — el trader decide
+    AMBIGUO  = "AMBIGUO"   # reservado — ver nota debajo del bloque
     DESCARTAR = "DESCARTAR" # score muy bajo en ambos
 
 class FuenteDatos(str, Enum):
     LIVE      = "LIVE"       # datos de hoy via Schwab
     HISTORICO = "HISTORICO"  # datos históricos para backtesting
+```
 
+> **Nota sobre `Clasificacion.AMBIGUO`:** desde la v1.1.0 del evaluador (ver Regla 6 más abajo),
+> un empate real entre `score_day` y `score_swing` ya no llega a `AMBIGUO` — se resuelve a `DAY`
+> por el desempate de capital limitado. El valor del enum, la columna `señales_ambiguo` en
+> `BacktestRun` y la UI que lo muestra quedan por compatibilidad con runs históricos, pero en la
+> práctica el contador queda siempre en 0 con la lógica actual.
+
+```python
 class ScanResult(BaseModel):
     id: Optional[int] = None
 
@@ -600,9 +614,9 @@ score_day = suma de (peso_criterio_i * valor_criterio_i_day)
 
 confianza = score_winner / score_max_posible
 ```
-Un ticker con 5 criterios calculados y score 4/5 es más confiable que uno con 7 criterios y score 4/7.
+Un ticker con 5 criterios calculados y score 4/5 es más confiable que uno con 6 criterios y score 4/6.
 
-**Regla 4 — Los 7 criterios como funciones separadas:**
+**Regla 4 — Los 6 criterios objetivos como funciones separadas:**
 Cada criterio vive en `criteria.py` como función independiente y testeable:
 ```python
 def criterio_relvol(relvol: float, config: ScanConfig) -> tuple[float, float]:
@@ -623,22 +637,22 @@ Si len(criterios_calculados) < config.min_criterios_calculables:
 Un ticker con 1 criterio calculado y score 0.9/1.0 es más peligroso que uno con
 score 3.5/7.0 — la confianza alta con datos insuficientes es peor que la incertidumbre.
 
-**Regla 5.5 — Filtros de entrada antes de los 7 criterios:**
+**Regla 5.5 — Filtros de entrada antes de los 6 criterios:**
 ```python
 def _validar_filtros_entrada(datos: DatosTickerCompletos, config: ScanConfig) -> list[str]:
     # precio, variación diaria, ATR%, RelVol, volumen promedio, spread bid/ask
     # devuelve la lista de nombres de filtros violados (vacía = pasa)
 ```
-Corre **antes** de los 7 criterios (antes incluso de la Regla 5). Si el ticker no cumple algún
+Corre **antes** de los 6 criterios (antes incluso de la Regla 5). Si el ticker no cumple algún
 mínimo de `ScanConfig` (`precio_min/max`, `variacion_diaria_min_pct`, `atr_pct_min`, `relvol_min`,
 `volumen_promedio_min`, `spread_max_pct`), se descarta directo con `criterios_incompletos =
-["FILTRO_ENTRADA:xxx", ...]`, sin gastar los 7 criterios. Si un dato puntual no está disponible
+["FILTRO_ENTRADA:xxx", ...]`, sin gastar los 6 criterios. Si un dato puntual no está disponible
 (ej. sin Bid/Ask en el CSV), ese filtro en particular simplemente no se evalúa — no bloquea por
 ausencia de dato, solo por violación real de un dato que sí existe. Ejemplo real: un ADR de baja
-liquidez con spread bid/ask >2% del precio se descartaba igual con los 7 criterios "viendo bien"
+liquidez con spread bid/ask >2% del precio se descartaba igual con los 6 criterios "viendo bien"
 técnicamente — este gate existe específicamente para atrapar ese caso.
 
-**Regla 6 — Clasificación por umbral relativo:**
+**Regla 6 — Clasificación por umbral relativo, con desempate por capital limitado:**
 ```
 score_day_ponderado   = score_day   * peso_total_calculable
 score_swing_ponderado = score_swing * peso_total_calculable
@@ -648,10 +662,18 @@ si score_day_ponderado >= umbral_decision Y score_day > score_swing:
 elif score_swing_ponderado >= umbral_decision Y score_swing > score_day:
     clasificacion = SWING
 elif ambos >= umbral_decision:
-    clasificacion = AMBIGUO
+    # empate exacto tras los 6 criterios objetivos — capital limitado
+    # favorece day trade por default (menor exposición temporal)
+    clasificacion = DAY
 else:
     clasificacion = DESCARTAR
 ```
+**Historia:** hasta la v1.0.0 del evaluador, "capital" era un 7mo criterio (`criterio_capital()`)
+hardcodeado para devolver siempre `(1.0, 0.0)` — sumaba un punto fijo a `score_day` en **cada**
+evaluación, no solo en empates. Eso causó que un backtest de 1 mes (149 tickers, 3.425
+evaluaciones) diera 0 señales SWING. Se corrigió en v1.1.0 a lo que decía la especificación
+original del sistema: capital es un desempate que actúa solo cuando `score_day == score_swing`
+tras los 6 criterios objetivos, no un criterio que suma puntos por sí solo.
 
 ---
 
@@ -806,6 +828,15 @@ Por cada tick recibido:
 No re-evaluar en cada tick — solo en eventos significativos.
 Re-evaluar en cada tick bloquearía el event loop y no agrega valor.
 
+> **Pendiente para cuando se implemente esto:** `indicators/trend.py::detect_cruce_ema()` ya NO
+> detecta "cruzó EMA 9 o 21 recién" — desde v1.2.0 del evaluador devuelve la posición relativa
+> actual (EMA rápida por encima/debajo de la lenta), no un evento puntual (se corrigió porque la
+> semántica de "cruce en la última vela" hacía que `timeframe_setup` fuera incalculable en
+> prácticamente el 100% de los casos, tanto en backtest como en vivo — ver Regla 4). Si
+> `market_data_cache` quiere reaccionar a un cruce fresco como evento significativo, necesita su
+> propia lógica de detección (comparar la posición actual contra la posición del tick anterior
+> guardada en el cache), no reusar `detect_cruce_ema()` tal cual.
+
 ### Descubrimiento incremental durante sesión
 
 Si ToS exporta un segundo CSV durante la sesión (nueva oportunidad intradiaria):
@@ -893,11 +924,13 @@ Implementado en `fetchers/schwab_client.py` (`iniciar_conexion()`, `completar_co
 (el `state` OAuth no coincide — pasa si se recarga `/schwab/connect` entre el paso 1 y el paso 2,
 generando un link nuevo con `state` distinto al que finalmente se pega).
 
-**Vencimiento del token — no lo documenta oficialmente Schwab:** el `refresh_token` deja de ser
-aceptado por Schwab ~7 días después de la autorización manual (confirmado empíricamente: un token
-de 21 días fue rechazado con `invalid_grant`). `REFRESH_TOKEN_MAX_AGE_DIAS = 7` en `schwab_client.py`
-infiere el vencimiento por la edad del token (guardada en `creation_timestamp` dentro del propio
-archivo del token) **sin gastar una llamada a Schwab** para tokens ya sabidos vencidos.
+**Vencimiento del token:** el `refresh_token` vence a los 7 días (documentado oficialmente por
+Schwab en el PDF "Accounts and Trading Production" del Developer Portal — ver
+`docs/schwab-api/RESUMEN.md` — y también confirmado empíricamente antes de encontrar esa
+referencia: un token de 21 días fue rechazado con `invalid_grant`). El access token vence a los 30
+minutos. `REFRESH_TOKEN_MAX_AGE_DIAS = 7` en `schwab_client.py` infiere el vencimiento por la edad
+del token (guardada en `creation_timestamp` dentro del propio archivo del token) **sin gastar una
+llamada a Schwab** para tokens ya sabidos vencidos.
 
 **Estado de conexión (`estado_conexion()`)** — única fuente de verdad, usada por el badge del header
 en todas las páginas: `"MOCK"` | `"SIN_CREDENCIALES"` | `"ON_LINE"` | `"DESCONECTADO"`. Hace una

@@ -105,15 +105,16 @@ class ScanConfig(BaseModel):
     ivr_umbral_compra: float = 30.0  # criterio 6: IVR < X → señal day (opciones baratas)
     ivr_umbral_venta: float = 50.0   # criterio 6: IVR > X → señal swing (opciones caras)
 
-    # ── Pesos de los 7 criterios ─────────────────────────────────────────────
+    # ── Pesos de los 6 criterios objetivos ────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
+    # El "capital" no es un criterio puntuado — es un desempate aplicado en
+    # evaluator._clasificar() cuando score_day == score_swing (ver CLAUDE.md).
     peso_timeframe_setup: float = 1.0  # criterio 1
     peso_catalizador: float = 1.0  # criterio 2
     peso_relvol: float = 1.0  # criterio 3
     peso_atr_pct: float = 1.0  # criterio 4
     peso_sma200: float = 1.0  # criterio 5
     peso_ivr: float = 1.0  # criterio 6
-    peso_capital: float = 1.0  # criterio 7
 
     # ── Umbral de decisión ──────────────────────────────────────────────────
     umbral_decision: float = 4.0  # score mínimo (sobre total ponderado) para clasificar
@@ -186,7 +187,7 @@ class ScanResult(BaseModel):
     # Versionado — permite detectar si un resultado antiguo es reproducible
     # con código nuevo. Incrementar evaluator_version en cada cambio de lógica.
     config_version: str = "1.0.0"  # SemVer del schema de ScanConfig
-    evaluator_version: str = "1.0.0"  # SemVer del código del evaluador
+    evaluator_version: str = "1.2.0"  # SemVer del código del evaluador
 
     # ── Contexto de mercado al momento del scan ──────────────────────────────
     # No afecta el score. Input para el optimizador en Fase 2.

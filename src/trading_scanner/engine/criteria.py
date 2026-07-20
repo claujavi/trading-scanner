@@ -76,7 +76,3 @@ def criterio_ivr(ivr: Optional[float], config: ScanConfig) -> Optional[Tuple[flo
     if ivr > config.ivr_umbral_venta:
         return 0.0, 1.0
     return 1.0, 1.0
-
-
-def criterio_capital(config: ScanConfig) -> Optional[Tuple[float, float]]:
-    return 1.0, 0.0

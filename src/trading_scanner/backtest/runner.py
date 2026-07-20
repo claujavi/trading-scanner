@@ -29,6 +29,19 @@ from .simulator import simular
 
 console = Console()
 
+# Límite de concurrencia contra Schwab. Sin esto, un backtest con muchos
+# tickers x muchos días lanza miles de conexiones simultáneas: en Windows
+# el selector de asyncio tiene un tope bajo de file descriptors (revienta
+# con "too many file descriptors in select()"), y Schwab devuelve 403
+# (bloqueo del WAF/Akamai) ante ráfagas grandes de requests concurrentes.
+#
+# Cada tarea (_evaluar_ticker_dia) dispara internamente hasta 4-5 llamadas
+# a Schwab en paralelo (d/4h/15m/5m + velas del día para la simulación), así
+# que un límite de 5 tareas concurrentes ya implica ~20-25 conexiones Schwab
+# simultáneas — suficiente margen bajo el límite de sockets de Windows y
+# lejos del umbral que dispara el bloqueo de Schwab.
+_SCHWAB_CONCURRENCY = asyncio.Semaphore(5)
+
 
 def _dias_habiles(inicio: date, fin: date) -> list[date]:
     dias = []
@@ -41,6 +54,13 @@ def _dias_habiles(inicio: date, fin: date) -> list[date]:
 
 
 async def _evaluar_ticker_dia(
+    ticker: str, fecha: date, config: ScanConfig
+) -> Optional[ResultadoDia]:
+    async with _SCHWAB_CONCURRENCY:
+        return await _evaluar_ticker_dia_impl(ticker, fecha, config)
+
+
+async def _evaluar_ticker_dia_impl(
     ticker: str, fecha: date, config: ScanConfig
 ) -> Optional[ResultadoDia]:
     fin_contexto = fecha - timedelta(days=1)

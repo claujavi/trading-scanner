@@ -91,7 +91,7 @@
     <table>
       <thead>
         <tr>
-          <th>Fecha corrida</th>
+          <th>Fecha corrida (NY)</th>
           <th>Rango</th>
           <th>Tickers</th>
           <th>Operadas</th>
@@ -102,7 +102,7 @@
       <tbody>
         {% for r in runs %}
         <tr>
-          <td class="mono">{{ r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "" }}</td>
+          <td class="mono">{{ r.created_at | to_ny }}</td>
           <td class="mono">{{ r.fecha_inicio }} → {{ r.fecha_fin }}</td>
           <td>{{ r.tickers | length }} tickers</td>
           <td class="mono">{{ r.total_operadas }}</td>

@@ -43,18 +43,22 @@ def calc_vwap(df: pl.DataFrame) -> pl.Series:
 
 
 def detect_cruce_ema(df: pl.DataFrame, rapida: int, lenta: int) -> Optional[bool]:
+    """True si la EMA rápida está actualmente por encima de la EMA lenta,
+    False si está por debajo. Reporta la posición relativa actual, no si el
+    cruce ocurrió recién en la última vela — antes de v1.1.0 exigía un cruce
+    literal entre las dos últimas velas, lo que hacía que el criterio
+    timeframe_setup casi nunca se pudiera calcular (0/3425 en el primer
+    backtest real). None solo si no hay datos suficientes para calcular
+    las EMAs, no si simplemente no hubo cruce."""
     pdf = _to_pandas(df)
     if "close" not in pdf.columns:
         return None
     close = pdf["close"].astype(float)
+    if len(close) < 2:
+        return None
     fast = close.ewm(span=rapida, adjust=False).mean()
     slow = close.ewm(span=lenta, adjust=False).mean()
-    diff = fast - slow
-    if len(diff) < 2:
+    last_fast, last_slow = fast.iloc[-1], slow.iloc[-1]
+    if last_fast is None or last_slow is None:
         return None
-    prev, last = diff.iloc[-2], diff.iloc[-1]
-    if prev < 0 and last > 0:
-        return True
-    if prev > 0 and last < 0:
-        return False
-    return None
+    return bool(last_fast > last_slow)

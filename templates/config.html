@@ -57,15 +57,14 @@
     </div>
 
     <div class="card">
-      <div class="card-title">Pesos de los 7 criterios</div>
-      <div class="form-hint" style="margin-bottom:12px;">0.0 desactiva el criterio. 1.0 = peso igual para todos (default).</div>
+      <div class="card-title">Pesos de los 6 criterios</div>
+      <div class="form-hint" style="margin-bottom:12px;">0.0 desactiva el criterio. 1.0 = peso igual para todos (default). El capital disponible ya no es un criterio puntuado: se usa como desempate automático a favor de DAY cuando el score de day y swing quedan exactamente empatados.</div>
       <div class="form-group"><label>1 — Timeframe setup</label><input type="number" step="any" name="peso_timeframe_setup" value="{{ config.peso_timeframe_setup }}" /></div>
       <div class="form-group"><label>2 — Catalizador</label><input type="number" step="any" name="peso_catalizador" value="{{ config.peso_catalizador }}" /></div>
       <div class="form-group"><label>3 — RelVol</label><input type="number" step="any" name="peso_relvol" value="{{ config.peso_relvol }}" /></div>
       <div class="form-group"><label>4 — ATR%</label><input type="number" step="any" name="peso_atr_pct" value="{{ config.peso_atr_pct }}" /></div>
       <div class="form-group"><label>5 — SMA200</label><input type="number" step="any" name="peso_sma200" value="{{ config.peso_sma200 }}" /></div>
       <div class="form-group"><label>6 — IVR (HV Rank)</label><input type="number" step="any" name="peso_ivr" value="{{ config.peso_ivr }}" /></div>
-      <div class="form-group"><label>7 — Capital</label><input type="number" step="any" name="peso_capital" value="{{ config.peso_capital }}" /></div>
     </div>
 
     <div class="card">

@@ -44,7 +44,7 @@ def test_evaluador_classifica_day_con_setup_bullish_y_relvol_alto():
     assert resultado.clasificacion == Clasificacion.DAY
     assert resultado.score_day > resultado.score_swing
     assert resultado.confianza == 1.0
-    assert resultado.score_max_posible == 7.0
+    assert resultado.score_max_posible == 6.0
     assert resultado.criterios_incompletos == []
 
 
@@ -65,30 +65,36 @@ def test_evaluador_classifica_swing_con_setup_bearish_y_relvol_moderado():
 
     assert resultado.clasificacion == Clasificacion.SWING
     assert resultado.score_swing > resultado.score_day
-    assert resultado.score_max_posible == 7.0
+    assert resultado.score_max_posible == 6.0
     assert resultado.confianza == pytest.approx(resultado.score_swing / resultado.score_max_posible)
 
 
-def test_evaluador_retiene_ambiguo_si_ambos_scores_superan_el_umbral():
+def test_evaluador_empate_favorece_day_por_capital_limitado():
+    """Capital ya no es un criterio puntuado — es un desempate en _clasificar().
+    Este dataset arma un empate real entre los 6 criterios objetivos:
+    timeframe (2 bullish/2 bearish → 0.5/0.5), catalizador sin detectar (1.0/1.0),
+    relvol en zona day (1.0/0.0), atr_pct en zona swing (0.0/1.0), sma200 día
+    (1.0/0.0), ivr en zona swing (0.0/1.0) → day=swing=3.5. Con capital limitado
+    el desempate favorece DAY."""
     config = ScanConfig(umbral_decision=1.0)
     datos = make_base_data(
         cruce_ema_921_5m=True,
         cruce_ema_921_15m=True,
-        cruce_ema_921_4h=True,
-        cruce_ema_921_d=True,
-        catalizador_detectado=True,
+        cruce_ema_921_4h=False,
+        cruce_ema_921_d=False,
+        catalizador_detectado=False,
         warning_calendar="GREEN",
-        relvol=2.0,  # zona swing del criterio, pero cumple el filtro de entrada relvol_min
-        atr_pct=2.5,  # ídem, zona swing del criterio y cumple atr_pct_min
-        sobre_sma200=True,  # rebalancea el empate ahora que relvol/atr_pct empujan swing
-        ivr=55.0,
+        relvol=3.5,  # zona day
+        atr_pct=2.0,  # zona swing, cumple igual el filtro de entrada atr_pct_min
+        sobre_sma200=True,  # day
+        ivr=55.0,  # zona swing
     )
 
     resultado = evaluar(datos, config)
 
-    assert resultado.clasificacion == Clasificacion.AMBIGUO
     assert resultado.score_day == pytest.approx(resultado.score_swing)
-    assert resultado.score_max_posible == 7.0
+    assert resultado.clasificacion == Clasificacion.DAY
+    assert resultado.score_max_posible == 6.0
 
 
 def test_evaluador_descarta_por_insuficiente_data():
@@ -119,7 +125,7 @@ def test_evaluador_marca_criterios_incompletos_correctamente():
 
     assert "relvol" in resultado.criterios_incompletos
     assert "atr_pct" in resultado.criterios_incompletos
-    assert resultado.score_max_posible == 5.0
+    assert resultado.score_max_posible == 4.0
     assert resultado.clasificacion != Clasificacion.DESCARTAR
 
 
@@ -133,7 +139,7 @@ def test_pesos_afectan_score():
     resultado_peso_alto = evaluar(datos, config_peso_alto)
 
     assert resultado_base.score_day != resultado_peso_alto.score_day
-    assert resultado_peso_alto.score_max_posible == pytest.approx(9.0)  # 6 pesos en 1.0 + peso_relvol en 3.0
+    assert resultado_peso_alto.score_max_posible == pytest.approx(8.0)  # 5 pesos en 1.0 + peso_relvol en 3.0
 
 
 def test_slippage_no_afecta_score():

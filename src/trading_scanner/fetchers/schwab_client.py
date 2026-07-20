@@ -71,9 +71,10 @@ def get_client() -> Optional[schwab_client.Client]:
 
 
 REFRESH_TOKEN_MAX_AGE_DIAS = 7
-"""Empírico — Schwab no lo documenta oficialmente, pero el refresh_token
-deja de aceptarse ~7 días después de la última autorización manual (lo
-confirmamos con un token de 21 días que Schwab rechazó con invalid_grant)."""
+"""Documentado oficialmente por Schwab (PDF "Accounts and Trading Production"
+del Developer Portal, ver docs/schwab-api/RESUMEN.md) y confirmado también
+empíricamente antes de encontrar esa referencia: un token de 21 días fue
+rechazado con invalid_grant."""
 
 
 def info_token() -> Optional[dict]:
@@ -136,20 +137,14 @@ def completar_conexion(received_url: str, auth_context: schwab_auth.AuthContext)
 def _verificar_conexion_real() -> str:
     """Confirma que el token no solo carga, sino que Schwab lo acepta.
 
-    El refresh_token de Schwab vence a los ~7 días — un token que carga
-    bien desde disco puede estar igual muerto del lado del servidor.
     get_account_numbers() es la llamada más liviana de la API (solo
     devuelve los hashes de cuenta, sin saldos ni posiciones): sirve como
     "ping" de sesión sin gastar rate limit de forma significativa.
-    """
-    info = info_token()
-    if info is not None and info["edad_dias"] >= REFRESH_TOKEN_MAX_AGE_DIAS:
-        console.log(
-            f"[yellow]Token de Schwab con {info['edad_dias']:.1f} días — "
-            f"se asume vencido sin llamar a la API.[/yellow]"
-        )
-        return "DESCONECTADO"
 
+    El chequeo de edad del token (barato, sin red) ya se hizo antes en
+    estado_conexion() — acá solo se llega si el token todavía no cruzó
+    el umbral de edad conocido (REFRESH_TOKEN_MAX_AGE_DIAS).
+    """
     client = get_client()
     if client is None:
         return "DESCONECTADO"
@@ -250,6 +245,21 @@ async def estado_conexion() -> str:
         return "MOCK"
     if not settings.schwab_app_key or not settings.schwab_app_secret:
         return "SIN_CREDENCIALES"
+
+    # Chequeo de edad del token: no pega a la red, así que corre siempre,
+    # sin importar el horario hábil ni el cache — evita mostrar "ON_LINE"
+    # con datos viejos si nadie cargó una página en horario hábil desde
+    # que el token venció (el filtro de horario de abajo solo protege la
+    # llamada REAL a Schwab, no este chequeo local).
+    info = info_token()
+    if info is not None and info["edad_dias"] >= REFRESH_TOKEN_MAX_AGE_DIAS:
+        console.log(
+            f"[yellow]Token de Schwab con {info['edad_dias']:.1f} días — "
+            f"se asume vencido sin llamar a la API.[/yellow]"
+        )
+        _estado_cache["valor"] = "DESCONECTADO"
+        _estado_cache["expira"] = time.monotonic() + _ESTADO_CACHE_TTL
+        return "DESCONECTADO"
 
     if not await _en_horario_habil():
         # Fuera de horario/día hábil: no tiene sentido gastar una llamada

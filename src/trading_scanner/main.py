@@ -15,8 +15,9 @@ Rutas:
 import asyncio
 import json
 from contextlib import asynccontextmanager
-from datetime import date
+from datetime import date, datetime, timezone
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from fastapi import FastAPI, Request
 from fastapi.responses import HTMLResponse
@@ -44,6 +45,20 @@ _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _TEMPLATES_DIR = _PROJECT_ROOT / "templates"
 _STATIC_DIR = _PROJECT_ROOT / "static"
 
+_NY_TZ = ZoneInfo("America/New_York")
+
+
+def _to_ny(value: datetime, fmt: str = "%Y-%m-%d %H:%M") -> str:
+    """Los timestamps se guardan naive en UTC (datetime.utcnow()) — se
+    muestran en hora de Nueva York porque es la referencia horaria que ya
+    usa el resto del sistema (horario hábil, feriados NYSE) en vez de UTC
+    crudo o la hora local del trader."""
+    if value is None:
+        return ""
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=timezone.utc)
+    return value.astimezone(_NY_TZ).strftime(fmt)
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -59,6 +74,7 @@ async def lifespan(app: FastAPI):
     _STATIC_DIR.mkdir(exist_ok=True)
 
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    templates.env.filters["to_ny"] = _to_ny
     app.state.templates = templates
     app.state.settings = settings
     app.state.latest_results = []

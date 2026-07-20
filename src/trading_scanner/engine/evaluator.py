@@ -7,7 +7,6 @@ from typing import Optional
 from ..models import ScanConfig, ScanResult, Clasificacion, FuenteDatos
 from .criteria import (
     criterio_atr_pct,
-    criterio_capital,
     criterio_catalizador,
     criterio_ivr,
     criterio_relvol,
@@ -52,7 +51,6 @@ _CRITERIO_NOMBRES = [
     "atr_pct",
     "sma200",
     "ivr",
-    "capital",
 ]
 
 _PESOS_ATTRS = [
@@ -62,7 +60,6 @@ _PESOS_ATTRS = [
     "peso_atr_pct",
     "peso_sma200",
     "peso_ivr",
-    "peso_capital",
 ]
 
 
@@ -76,7 +73,9 @@ def _clasificar(score_day: float, score_swing: float, config: ScanConfig) -> Cla
     if score_swing >= config.umbral_decision and score_swing > score_day:
         return Clasificacion.SWING
     if score_day >= config.umbral_decision and score_swing >= config.umbral_decision:
-        return Clasificacion.AMBIGUO
+        # Empate tras evaluar los 6 criterios objetivos: capital limitado
+        # favorece day trade por default (menor exposición temporal de la posición).
+        return Clasificacion.DAY
     return Clasificacion.DESCARTAR
 
 
@@ -177,7 +176,6 @@ def evaluar(datos: DatosTickerCompletos, config: ScanConfig) -> ScanResult:
         criterio_atr_pct(datos.atr_pct, config),
         criterio_sma200(datos.sobre_sma200),
         criterio_ivr(datos.ivr, config),
-        criterio_capital(config),
     ]
 
     criterios_incompletos = [n for r, n in zip(resultados, _CRITERIO_NOMBRES) if r is None]
@@ -241,7 +239,6 @@ def desglosar_criterios(result: ScanResult) -> list[dict]:
         criterio_atr_pct(result.atr_pct, config),
         criterio_sma200(result.sobre_sma200),
         criterio_ivr(result.ivr, config),
-        criterio_capital(config),
     ]
 
     desglose = []
