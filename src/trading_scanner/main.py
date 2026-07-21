@@ -122,10 +122,13 @@ async def lifespan(app: FastAPI):
                 cache_ticker.ultima_clasificacion = result.clasificacion
             cache_ticker.ultima_evaluacion = datetime.utcnow()
 
-    # ── CSV Watcher con pipeline callback ─────────────────────────────────
-    loop = asyncio.get_event_loop()
-
-    async def _pipeline_callback(tickers):
+    async def _procesar_y_conectar_stream(tickers):
+        """Corre el pipeline pre-market (sembrando el cache) y arranca o
+        extiende el stream — compartido por el CSV watcher (tickers nuevos
+        del día) y por POST /stream/start (reconexión manual con lo que ya
+        esté persistido hoy en Turso, ej. tras reiniciar el servidor sin
+        que llegue un CSV nuevo — el watcher solo dispara con eventos de
+        filesystem, no reprocesa lo que ya estaba en el disco)."""
         from .pipeline import run_pipeline
         config = await get_active_config()
         results = await run_pipeline(tickers, config, cache=app.state.market_cache)
@@ -139,6 +142,14 @@ async def lifespan(app: FastAPI):
             await app.state.stream_manager.start(nombres)
         else:
             await app.state.stream_manager.agregar_tickers(nombres)
+
+    app.state.procesar_y_conectar_stream = _procesar_y_conectar_stream
+
+    # ── CSV Watcher con pipeline callback ─────────────────────────────────
+    loop = asyncio.get_event_loop()
+
+    async def _pipeline_callback(tickers):
+        await _procesar_y_conectar_stream(tickers)
 
     csv_watcher = CSVWatcher(
         Path(settings.input_folder),
