@@ -9,10 +9,23 @@ de los tickers reales de scan lo tuvo nunca, ni en vivo ni históricamente.
 Tampoco hay spread bid/ask histórico — Schwab no lo expone vía REST. Ambos
 quedan en None, igual que el evaluador ya maneja datos faltantes en vivo:
 catalizador queda en criterios_incompletos, spread simplemente no se evalúa.
+
+Universo histórico — "real" vs lista manual:
+ToS no permite exportar el Stock Hacker retroactivamente (ver CLAUDE.md,
+"Cómo llega realmente el CSV"), así que el único universo día-por-día
+fiel a lo que el trader vio en pantalla es el que surge de los CSV que
+ya se guardaron en input/ e input/processed/ — ver `universo_real_csv()`.
+Correr el backtest sobre una lista de tickers fija aplicada a todos los
+días de un rango (la firma vieja `run_backtest(tickers, ...)`) mide algo
+distinto: qué tan bien puntúa el evaluador sobre nombres ya sabidos como
+volátiles, no el rendimiento esperado del sistema en vivo. Útil como
+chequeo secundario, pero no como fuente para calibrar parámetros.
 """
 
 import asyncio
+import re
 from datetime import date, datetime, timedelta
+from pathlib import Path
 from typing import Optional
 
 import polars as pl
@@ -22,6 +35,7 @@ from ..engine.evaluator import DatosTickerCompletos, evaluar
 from ..engine.signals import detect_setup_timeframe
 from ..fetchers import history_cache
 from ..indicators.volume import calc_hv_rank
+from ..ingest.csv_parser import parse_csv
 from ..models import BacktestRun, Clasificacion, FuenteDatos, ScanConfig
 from ..pipeline import _calcular_atr_pct, _calcular_relvol, _calcular_volumen_promedio
 from .metrics import ResultadoDia, calcular_metricas
@@ -165,3 +179,82 @@ async def run_backtest(
     )
 
     return calcular_metricas(config, fecha_inicio, fecha_fin, tickers, resultados)
+
+
+# Fecha en el nombre de archivo del trader: scan_20260716.csv,
+# scan_20260717_20260717_130741.csv (renombrado por csv_watcher al mover a
+# processed/), sample_scan_*.csv (fixtures de prueba — se excluyen).
+_FECHA_EN_NOMBRE = re.compile(r"(\d{8})")
+
+
+def universo_real_csv(input_folder: Path) -> dict[date, list[str]]:
+    """Reconstruye, para cada día que el trader efectivamente exportó un CSV
+    de ToS, la lista real de tickers que salieron ese día — union de todos
+    los CSV de esa fecha (el Stock Hacker puede agregar candidatos nuevos
+    durante la sesión, ver CLAUDE.md "Descubrimiento incremental")."""
+    carpetas = [input_folder, input_folder / "processed"]
+    por_dia: dict[date, set[str]] = {}
+
+    for carpeta in carpetas:
+        if not carpeta.exists():
+            continue
+        for path in carpeta.glob("*.csv"):
+            if path.stem.startswith("sample_"):
+                continue
+            match = _FECHA_EN_NOMBRE.search(path.stem)
+            if not match:
+                continue
+            try:
+                fecha = datetime.strptime(match.group(1), "%Y%m%d").date()
+            except ValueError:
+                continue
+            try:
+                tickers = [t.ticker for t in parse_csv(path)]
+            except Exception as exc:
+                console.log(f"[yellow]No se pudo parsear {path.name} para universo real: {exc}[/yellow]")
+                continue
+            por_dia.setdefault(fecha, set()).update(tickers)
+
+    return {fecha: sorted(tks) for fecha, tks in sorted(por_dia.items())}
+
+
+async def run_backtest_universo_real(config: ScanConfig, input_folder: Path) -> BacktestRun:
+    """Backtest fiel al universo real: cada ticker solo se evalúa los días
+    en que efectivamente apareció en un CSV de ToS guardado por el trader —
+    a diferencia de run_backtest(), que aplica una lista fija a todo el
+    rango de fechas parejo."""
+    universo = universo_real_csv(input_folder)
+    if not universo:
+        raise ValueError(
+            "No hay CSV históricos guardados en input/ ni input/processed/ "
+            "para reconstruir el universo real."
+        )
+
+    console.log(
+        f"[green]Backtest universo real: {len(universo)} días con CSV guardado[/green]"
+    )
+
+    tareas = [
+        _evaluar_ticker_dia(ticker, fecha, config)
+        for fecha, tickers in universo.items()
+        for ticker in tickers
+    ]
+    crudos = await asyncio.gather(*tareas, return_exceptions=True)
+
+    resultados: list[ResultadoDia] = []
+    errores = 0
+    for item in crudos:
+        if isinstance(item, Exception):
+            errores += 1
+        elif item is not None:
+            resultados.append(item)
+
+    console.log(
+        f"[green]Backtest universo real completo: {len(resultados)} evaluaciones"
+        + (f", {errores} errores" if errores else "")
+        + "[/green]"
+    )
+
+    todos_tickers = sorted({t for tickers in universo.values() for t in tickers})
+    fechas = sorted(universo.keys())
+    return calcular_metricas(config, fechas[0], fechas[-1], todos_tickers, resultados)

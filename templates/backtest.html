@@ -39,6 +39,25 @@
     </form>
   </div>
 
+  <div class="card">
+    <div class="card-title">Backtest — universo real</div>
+    <div class="form-hint" style="margin-bottom:16px;">
+      Ignora tickers y fechas de arriba. Usa exclusivamente los CSV de ToS ya guardados en
+      <code>input/</code> e <code>input/processed/</code> — cada ticker se evalúa solo los días
+      en que realmente apareció en un scan exportado, no una lista fija aplicada a todo el rango.
+      {% if dias_universo_real %}
+        Días disponibles: {{ dias_universo_real | join(", ") }}.
+      {% else %}
+        No hay CSV guardados todavía.
+      {% endif %}
+    </div>
+    <form action="/backtest/run-universo-real" method="post">
+      <button type="submit" class="btn btn-primary" {{ "disabled" if not dias_universo_real else "" }}>
+        Correr con universo real
+      </button>
+    </form>
+  </div>
+
   {% if run %}
   <div class="card">
     <div class="card-title">Resultado — {{ run.fecha_inicio }} a {{ run.fecha_fin }}</div>

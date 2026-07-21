@@ -7,11 +7,12 @@ GET  /backtest/{id}  → detalle de un run
 """
 
 import json
+from pathlib import Path
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
-from ..backtest.runner import run_backtest
+from ..backtest.runner import run_backtest, run_backtest_universo_real, universo_real_csv
 from ..config import settings
 from ..database import db
 from ..fetchers.schwab_client import estado_conexion
@@ -20,11 +21,15 @@ from ..pipeline import get_active_config
 
 router = APIRouter(prefix="/backtest", tags=["Backtest"])
 
+_INPUT_FOLDER = Path(settings.input_folder)
+
 
 async def _base_context() -> dict:
+    dias = sorted(universo_real_csv(_INPUT_FOLDER).keys())
     return {
         "mock_schwab": settings.mock_schwab,
         "schwab_estado": await estado_conexion(),
+        "dias_universo_real": [d.isoformat() for d in dias],
     }
 
 
@@ -114,4 +119,29 @@ async def post_backtest_run(
     )
     backtest_id = await db.insert_backtest_run(resultado.model_dump(mode="json"))
 
+    return RedirectResponse(f"/backtest/{backtest_id}", status_code=303)
+
+
+@router.post("/run-universo-real")
+async def post_backtest_run_universo_real(request: Request):
+    config = await get_active_config()
+    try:
+        resultado: BacktestRun = await run_backtest_universo_real(config, _INPUT_FOLDER)
+    except ValueError as exc:
+        try:
+            runs = await db.get_latest_backtest_runs(limit=10)
+        except Exception:
+            runs = []
+        templates = request.app.state.templates
+        return templates.TemplateResponse(
+            request=request,
+            name="backtest.html",
+            context={
+                "runs": [_parse_run(r) for r in runs], "run": None,
+                "error": str(exc),
+                **await _base_context(),
+            },
+        )
+
+    backtest_id = await db.insert_backtest_run(resultado.model_dump(mode="json"))
     return RedirectResponse(f"/backtest/{backtest_id}", status_code=303)
