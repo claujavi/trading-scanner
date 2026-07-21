@@ -32,10 +32,13 @@ from .api.scan import _dedupe_latest_por_ticker
 from .api.scan import router as scan_router
 from .api.schwab import router as schwab_router
 from .api.settings import router as settings_router
+from .api.stream import router as stream_router
 from .api.ticker import router as ticker_router
 from .config import settings
 from .database import db
+from .fetchers.market_data_cache import MarketDataCache
 from .fetchers.schwab_client import estado_conexion
+from .fetchers.schwab_stream import crear_stream_manager
 from .ingest.csv_parser import parse_csv
 from .ingest.csv_watcher import CSVWatcher
 
@@ -79,14 +82,63 @@ async def lifespan(app: FastAPI):
     app.state.settings = settings
     app.state.latest_results = []
 
+    # ── Streaming de sesión (Sprint 2) ──────────────────────────────────────
+    # market_cache vive en memoria durante toda la vida del proceso; se
+    # siembra por process_ticker() en cada corrida del pipeline pre-market
+    # (ver pipeline.py). stream_manager arranca recién con el primer CSV
+    # del día — no tiene sentido abrir el WebSocket sin ningún ticker.
+    from .pipeline import get_active_config
+
+    config_inicial = await get_active_config()
+    app.state.market_cache = MarketDataCache(config_inicial)
+    app.state.stream_manager = None
+
+    async def _on_evento_significativo(ticker: str):
+        cache_ticker = app.state.market_cache.get(ticker)
+        if cache_ticker is None or cache_ticker.lock.locked():
+            return
+        async with cache_ticker.lock:
+            datos = app.state.market_cache.snapshot(ticker)
+            if datos is None:
+                return
+            config = await get_active_config()
+
+            from .engine.evaluator import evaluar
+            result = evaluar(datos, config)
+
+            delta_day = abs(result.score_day - cache_ticker.ultimo_score_day)
+            delta_swing = abs(result.score_swing - cache_ticker.ultimo_score_swing)
+            if delta_day > 0.15 or delta_swing > 0.15:
+                try:
+                    await db.insert_scan_result(result)
+                    console.log(
+                        f"[cyan]Stream: {ticker} reevaluado (delta_day={delta_day:.2f} "
+                        f"delta_swing={delta_swing:.2f}) -> {result.clasificacion}[/cyan]"
+                    )
+                except Exception as exc:
+                    console.log(f"[red]Error persistiendo reevaluación de {ticker}: {exc}[/red]")
+                cache_ticker.ultimo_score_day = result.score_day
+                cache_ticker.ultimo_score_swing = result.score_swing
+                cache_ticker.ultima_clasificacion = result.clasificacion
+            cache_ticker.ultima_evaluacion = datetime.utcnow()
+
     # ── CSV Watcher con pipeline callback ─────────────────────────────────
     loop = asyncio.get_event_loop()
 
     async def _pipeline_callback(tickers):
-        from .pipeline import get_active_config, run_pipeline
+        from .pipeline import run_pipeline
         config = await get_active_config()
-        results = await run_pipeline(tickers, config)
+        results = await run_pipeline(tickers, config, cache=app.state.market_cache)
         app.state.latest_results = results
+
+        nombres = [t.ticker for t in tickers]
+        if app.state.stream_manager is None:
+            app.state.stream_manager = crear_stream_manager(
+                app.state.market_cache, _on_evento_significativo
+            )
+            await app.state.stream_manager.start(nombres)
+        else:
+            await app.state.stream_manager.agregar_tickers(nombres)
 
     csv_watcher = CSVWatcher(
         Path(settings.input_folder),
@@ -106,6 +158,9 @@ async def lifespan(app: FastAPI):
     watcher = getattr(app.state, "csv_watcher", None)
     if watcher:
         watcher.stop()
+    stream_manager = getattr(app.state, "stream_manager", None)
+    if stream_manager:
+        await stream_manager.stop()
     console.log("[green]Sistema apagado[/green]")
 
 
@@ -127,6 +182,7 @@ app.include_router(schwab_router)
 app.include_router(ticker_router)
 app.include_router(config_router)
 app.include_router(backtest_router)
+app.include_router(stream_router)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────

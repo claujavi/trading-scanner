@@ -1,0 +1,9 @@
+{% if modo == "MOCK" %}
+  <span class="nav-badge badge-mock" title="{{ tickers_suscritos | length }} tickers suscritos (mock)">STREAM MOCK</span>
+{% elif conectado %}
+  <span class="nav-badge badge-online" title="{{ tickers_suscritos | length }} tickers suscritos">STREAM ON</span>
+{% elif intentos_reconexion and intentos_reconexion > 0 %}
+  <span class="nav-badge badge-offline" title="Reintento #{{ intentos_reconexion }}">STREAM RECONECTANDO</span>
+{% else %}
+  <span class="nav-badge badge-offline">STREAM OFF</span>
+{% endif %}

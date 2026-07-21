@@ -58,8 +58,12 @@ MOCK_SCHWAB=true uv run uvicorn trading_scanner.main:app --host 0.0.0.0 --port 8
 
 ```
 Sprint 1 — Ingesta CSV + Schwab API + evaluador básico   [x] validado con datos reales
-Sprint 2 — Dashboard + clasificación + integración cal.  [~] avanzado (falta streaming WebSocket)
-Sprint 3 — Persistencia + backtesting                    [~] persistencia lista, backtesting sin empezar
+Sprint 2 — Dashboard + clasificación + streaming         [x] completo — streaming validado end-to-end
+                                                              con MOCK_SCHWAB=true; el StreamManager real
+                                                              (schwab.streaming) todavía no se probó en
+                                                              horario de mercado con token real
+Sprint 3 — Persistencia + backtesting                    [x] completo — universo real (CSV guardados) +
+                                                              universo curado como chequeo secundario
 Sprint 4 — Optimizador de parámetros                     [ ] pendiente
 Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futuro lejano)
 ```
@@ -90,6 +94,26 @@ Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futu
 - Página de Parámetros (`/config`) — formulario completo de `ScanConfig`, guarda en la tabla
   `scan_configs` de Turso; el pipeline usa `pipeline.get_active_config()` (última config guardada)
   en cada scan, no una copia fija al arrancar el servidor.
+- Backtest de **universo real**: `backtest/runner.py::universo_real_csv()` reconstruye, día por día,
+  qué tickers salieron realmente en los CSV de ToS guardados en `input/`/`input/processed/` (unión
+  de exports intradía del mismo día) y `run_backtest_universo_real()` evalúa cada ticker solo esos
+  días — a diferencia de `run_backtest()` (lista fija aplicada a todo un rango), que mide algo
+  distinto (qué tan bien puntúa el evaluador sobre nombres ya sabidos como volátiles) y queda como
+  chequeo secundario, no como fuente para calibrar parámetros. Botón separado en `/backtest`.
+- **Streaming de sesión (Sprint 2)**: `market_data_cache.py::MarketDataCache` mantiene en memoria el
+  estado de cada ticker suscrito (precio, VWAP incremental, velas de 5m bucketeadas desde velas de
+  1m) y detecta eventos significativos (cruce de VWAP, cruce de EMA 9/21 en 5m —solo al cerrar una
+  vela de 5m—, cambio de categoría de RelVol, nuevo máximo/mínimo del día). `schwab_stream.py`
+  expone `StreamManager` (real, sobre `schwab.streaming.StreamClient`, con reconexión por backoff
+  exponencial y re-suscripción completa al reconectar) y `MockStreamManager` (mismo API público,
+  ticks sintéticos deterministas, activo con `MOCK_SCHWAB=true`). Un evento significativo dispara
+  `evaluar()` sobre el snapshot del cache; si el score cambió >0.15 se persiste una fila nueva
+  (nunca overwrite) — el dashboard existente la recoge sola vía el polling de 30s a `/scan/partial`,
+  sin cambios de frontend. El descubrimiento incremental (CSV nuevo intra-sesión) agrega tickers a
+  la suscripción existente sin reiniciar el WebSocket. Validado end-to-end con `MOCK_SCHWAB=true`
+  (pipeline → seed del cache → stream → evento → reevaluación → persistencia → dashboard, y
+  descubrimiento incremental sin reiniciar conexión) — **el `StreamManager` real todavía no se
+  probó contra Schwab en horario de mercado** (requiere token real y sesión abierta).
 
 **Actualizar esta sección al completar cada sprint.**
 
@@ -145,11 +169,11 @@ Cada elección está tomada. No proponer alternativas salvo que una librería es
 ┌──────────────────────────┐  ┌────────────────────────────┐
 │  SCHWAB REST API          │  │  SCHWAB STREAMING          │
 │  schwab_history.py        │  │  schwab_stream.py          │
-│  Una sola descarga por    │  │  NO IMPLEMENTADO todavía   │
-│  ticker al inicio:        │  │  (Sprint 2 pendiente) —    │
-│  - velas 5m/15m/4h/d     │  │  el dashboard hoy solo      │
-│  - HV Rank (proxy IVR,   │  │  actualiza vía polling      │
-│    no option chain real) │  │  HTMX cada 30s, no ticks   │
+│  Una sola descarga por    │  │  StreamManager (real, vía  │
+│  ticker al inicio:        │  │  schwab.streaming) +        │
+│  - velas 5m/15m/4h/d     │  │  MockStreamManager (mismo   │
+│  - HV Rank (proxy IVR,   │  │  API público, ticks         │
+│    no option chain real) │  │  sintéticos con MOCK_SCHWAB)│
 └──────────────┬────────────┘  └─────────────┬──────────────┘
                │                             │
                └──────────────┬──────────────┘
@@ -217,9 +241,9 @@ Cada elección está tomada. No proponer alternativas salvo que una librería es
 │  GET  /settings           → credenciales + estado + mock│
 │  POST /settings/mock      → toggle modo mock en caliente│
 │                                                           │
-│  Pendientes (Sprint 2/3/4):                              │
-│  GET  /stream/status      → NO IMPLEMENTADO (sin stream) │
-│  POST /backtest/run       → NO IMPLEMENTADO              │
+│  GET  /stream/status       → estado del stream de sesión │
+│                                                           │
+│  Pendientes (Sprint 4):                                  │
 │  GET  /optimize/run       → NO IMPLEMENTADO              │
 └──────────────────────────┬──────────────────────────────┘
                            │
@@ -283,9 +307,12 @@ trading-scanner/
 │       │   ├── schwab_options.py      ← REST API: option chain. get_ivr() real queda sin usar en el
 │       │   │                            pipeline — Schwab no expone el rango de 52 semanas de IV
 │       │   │                            implícita, solo IV actual y rango de 52 semanas de PRECIO.
-│       │   ├── schwab_stream.py       ← NO IMPLEMENTADO — streaming WebSocket sigue siendo Sprint 2 pendiente
-│       │   ├── market_data_cache.py   ← NO IMPLEMENTADO — depende de schwab_stream.py
-│       │   ├── history_cache.py       ← existe, cache de Parquet — todavía no lo usa nada (backtest sin empezar)
+│       │   ├── schwab_stream.py       ← StreamManager (real) + MockStreamManager + crear_stream_manager()
+│       │   │                            factory (chequea settings.mock_schwab en runtime, no en import)
+│       │   ├── market_data_cache.py   ← MarketDataCache + TickerCache: estado en memoria por ticker
+│       │   │                            suscrito, detección de eventos significativos (VWAP/EMA 5m/
+│       │   │                            RelVol/nuevo máx-mín), snapshot() → DatosTickerCompletos
+│       │   ├── history_cache.py       ← cache de Parquet, usado por backtest/runner.py
 │       │   └── calendar_client.py    ← GET localhost:8000/events/{ticker}/24h
 │       │
 │       ├── indicators/
@@ -828,14 +855,15 @@ Por cada tick recibido:
 No re-evaluar en cada tick — solo en eventos significativos.
 Re-evaluar en cada tick bloquearía el event loop y no agrega valor.
 
-> **Pendiente para cuando se implemente esto:** `indicators/trend.py::detect_cruce_ema()` ya NO
-> detecta "cruzó EMA 9 o 21 recién" — desde v1.2.0 del evaluador devuelve la posición relativa
-> actual (EMA rápida por encima/debajo de la lenta), no un evento puntual (se corrigió porque la
-> semántica de "cruce en la última vela" hacía que `timeframe_setup` fuera incalculable en
-> prácticamente el 100% de los casos, tanto en backtest como en vivo — ver Regla 4). Si
-> `market_data_cache` quiere reaccionar a un cruce fresco como evento significativo, necesita su
-> propia lógica de detección (comparar la posición actual contra la posición del tick anterior
-> guardada en el cache), no reusar `detect_cruce_ema()` tal cual.
+> **Implementado así:** `indicators/trend.py::detect_cruce_ema()` NO detecta "cruzó EMA 9 o 21
+> recién" — desde v1.2.0 del evaluador devuelve la posición relativa actual (EMA rápida por encima/
+> debajo de la lenta), no un evento puntual (se corrigió porque la semántica de "cruce en la última
+> vela" hacía que `timeframe_setup` fuera incalculable en prácticamente el 100% de los casos, tanto
+> en backtest como en vivo — ver Regla 4). Por eso `market_data_cache.py::actualizar_vela_1m()` NO
+> reusa `detect_cruce_ema()` esperando que detecte el evento por sí sola: bucketea las velas de 1m
+> del stream de `chart_equity` en velas de 5m, y solo al **cerrarse** una ventana de 5m recalcula
+> `detect_cruce_ema()` y compara el resultado contra el valor guardado del cierre anterior — ahí sí
+> se obtiene el "cruce fresco" como evento, comparando snapshot contra snapshot.
 
 ### Descubrimiento incremental durante sesión
 

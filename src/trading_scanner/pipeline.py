@@ -25,6 +25,7 @@ from .engine.evaluator import DatosTickerCompletos, evaluar
 from .engine.signals import detect_setup_timeframe
 from .fetchers import calendar_client
 from .fetchers import schwab_history as schwab_hist
+from .fetchers.market_data_cache import MarketDataCache
 from .fetchers.mock_schwab import generate_ohlcv, get_mock_ivr
 from .indicators.volume import calc_atr_pct, calc_avg_volume, calc_hv_rank, calc_relvol
 from .models import FuenteDatos, ScanConfig, ScanResult, TickerBasico
@@ -125,7 +126,9 @@ def _calcular_volumen_promedio(df_d: pl.DataFrame, periodo: int) -> Optional[flo
     return calc_avg_volume(df_d, periodo)
 
 
-async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanResult:
+async def process_ticker(
+    ticker_data: TickerBasico, config: ScanConfig, cache: Optional[MarketDataCache] = None
+) -> ScanResult:
     ticker = ticker_data.ticker
 
     (df_5m, df_15m, df_4h, df_d), warning = await asyncio.gather(
@@ -179,18 +182,31 @@ async def process_ticker(ticker_data: TickerBasico, config: ScanConfig) -> ScanR
             f"{type(exc).__name__}: {exc or 'sin detalle'}[/red]"
         )
 
+    if cache is not None:
+        # Siembra el cache de streaming con los mismos DataFrames que ya
+        # se trajeron acá arriba — no dispara ninguna llamada REST nueva.
+        cache.seed(
+            ticker_data=ticker_data,
+            df_5m=df_5m, df_15m=df_15m, df_4h=df_4h, df_d=df_d,
+            signals=signals,
+            volumen_promedio=volumen_promedio,
+            atr_pct=atr_pct,
+            ivr=ivr,
+            warning=warning,
+        )
+
     return result
 
 
 async def run_pipeline(
-    tickers: list[TickerBasico], config: ScanConfig
+    tickers: list[TickerBasico], config: ScanConfig, cache: Optional[MarketDataCache] = None
 ) -> list[ScanResult]:
     if not tickers:
         return []
 
     console.log(f"[green]Pipeline iniciado: {len(tickers)} tickers[/green]")
 
-    tasks = [process_ticker(t, config) for t in tickers]
+    tasks = [process_ticker(t, config, cache) for t in tickers]
     raw = await asyncio.gather(*tasks, return_exceptions=True)
 
     results, errors = [], 0

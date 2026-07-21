@@ -275,6 +275,7 @@
       <a href="/settings" {% if "/settings" in request.url.path %}class="active"{% endif %}>Configuración</a>
     </div>
     <div class="nav-right">
+      <span id="stream-badge" hx-get="/stream/status" hx-trigger="load, every 10s" hx-swap="innerHTML"></span>
       {% if mock_schwab is defined and mock_schwab %}
         <span class="nav-badge badge-mock">MOCK</span>
       {% elif schwab_estado is defined and schwab_estado == "ON_LINE" %}
