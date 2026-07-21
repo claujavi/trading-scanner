@@ -58,6 +58,9 @@ class BaseStreamManager(ABC):
     async def agregar_tickers(self, tickers: list[str]) -> None: ...
 
     @abstractmethod
+    async def quitar_tickers(self, tickers: list[str]) -> None: ...
+
+    @abstractmethod
     async def stop(self) -> None: ...
 
     def status(self) -> dict:
@@ -173,6 +176,18 @@ class StreamManager(BaseStreamManager):
         await self._stream_client.chart_equity_add(tickers)
         console.log(f"[green]Agregando {len(tickers)} tickers a suscripción existente[/green]")
 
+    async def quitar_tickers(self, tickers: list[str]) -> None:
+        eliminados = [t for t in tickers if self._cache.eliminar(t)]
+        if not eliminados:
+            return
+        if self._stream_client is not None and self._conectado:
+            try:
+                await self._stream_client.level_one_equity_unsubs(eliminados)
+                await self._stream_client.chart_equity_unsubs(eliminados)
+            except Exception as exc:
+                console.log(f"[yellow]No se pudo desuscribir {eliminados} del stream: {exc}[/yellow]")
+        console.log(f"[green]Quitados del stream: {eliminados}[/green]")
+
     async def stop(self) -> None:
         self._stop_solicitado = True
         if self._task:
@@ -219,6 +234,17 @@ class MockStreamManager(BaseStreamManager):
         for ticker in nuevos:
             self._tasks[ticker] = asyncio.create_task(self._generar_ticks(ticker))
         return nuevos
+
+    async def quitar_tickers(self, tickers: list[str]) -> None:
+        eliminados = []
+        for ticker in tickers:
+            tarea = self._tasks.pop(ticker, None)
+            if tarea is not None:
+                tarea.cancel()
+            if self._cache.eliminar(ticker):
+                eliminados.append(ticker)
+        if eliminados:
+            console.log(f"[green]Quitados del stream (mock): {eliminados}[/green]")
 
     async def _generar_ticks(self, ticker: str) -> None:
         cache_ticker = self._cache.get(ticker)

@@ -111,6 +111,25 @@ def test_mock_status_refleja_cache():
     asyncio.run(body())
 
 
+def test_mock_quitar_tickers_saca_del_cache_y_cancela_tarea():
+    async def body():
+        async def on_evento(ticker: str):
+            pass
+
+        cache = _cache_con_ticker("AAPL")
+        mgr = MockStreamManager(cache, on_evento, intervalo_tick_s=100.0)
+        await mgr.start(["AAPL"])
+        assert cache.tiene("AAPL")
+
+        await mgr.quitar_tickers(["AAPL"])
+
+        assert "AAPL" not in mgr._tasks
+        assert not cache.tiene("AAPL")
+        assert mgr.status()["tickers_suscritos"] == []
+
+    asyncio.run(body())
+
+
 def test_stream_manager_backoff_reintenta_con_espera_creciente():
     async def body():
         async def on_evento(ticker: str):

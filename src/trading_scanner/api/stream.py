@@ -101,3 +101,17 @@ async def stream_start(request: Request):
 
     await request.app.state.procesar_y_conectar_stream(tickers)
     return _responder_estado(request, _status_payload(request))
+
+
+@router.delete("/tickers/{ticker}")
+async def stream_quitar_ticker(request: Request, ticker: str):
+    """Saca un ticker de la suscripción activa — ej. cuando Schwab no
+    tiene historial para el símbolo (ADRs/preferidas con formato raro del
+    CSV de ToS) y solo genera ruido en los logs sin aportar nada."""
+    # Ojo: NO normalizar a mayúsculas — símbolos de preferidas de ToS como
+    # "AXIApC" llevan una "p" minúscula intencional (base + "p" + clase),
+    # distinta de la clave real con la que quedó suscrito el ticker.
+    stream_manager = getattr(request.app.state, "stream_manager", None)
+    if stream_manager is not None:
+        await stream_manager.quitar_tickers([ticker])
+    return _responder_estado(request, _status_payload(request))

@@ -164,6 +164,12 @@ class MarketDataCache:
     def get(self, ticker: str) -> Optional[TickerCache]:
         return self._tickers.get(ticker)
 
+    def eliminar(self, ticker: str) -> bool:
+        """Saca un ticker del cache — usado cuando Schwab no tiene datos
+        para el símbolo (ej. acciones preferidas/ADRs con formato raro del
+        CSV de ToS) y no tiene sentido seguir intentando actualizarlo."""
+        return self._tickers.pop(ticker, None) is not None
+
     def _relvol_actual(self, cache: TickerCache) -> Optional[float]:
         if not cache.volumen_promedio:
             return None

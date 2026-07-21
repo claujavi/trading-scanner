@@ -184,3 +184,14 @@ def test_snapshot_devuelve_datos_ticker_completos_validos():
 def test_snapshot_ticker_no_suscrito_devuelve_none():
     cache = MarketDataCache(ScanConfig())
     assert cache.snapshot("MSFT") is None
+
+
+def test_eliminar_saca_ticker_del_cache():
+    config = ScanConfig()
+    cache = _seed_cache(config)
+
+    assert cache.eliminar("AAPL") is True
+    assert cache.tiene("AAPL") is False
+    assert cache.snapshot("AAPL") is None
+    # eliminar un ticker que no está no debe romper
+    assert cache.eliminar("AAPL") is False
