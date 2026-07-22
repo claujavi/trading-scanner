@@ -9,7 +9,7 @@ from datetime import date, datetime
 from enum import Enum
 from typing import Optional
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, model_validator
 
 
 # ============================================================================
@@ -86,82 +86,96 @@ class ScanConfig(BaseModel):
     # ticker cumpla los mínimos antes de evaluarlo — si no, se descarta
     # directamente (ver evaluator._validar_filtros_entrada). Sirven también
     # de referencia para el backtesting histórico.
-    precio_min: float = 5.0
-    precio_max: float = 500.0
-    volumen_promedio_min: int = 500_000
-    float_min: int = 10_000_000
-    variacion_diaria_min_pct: float = 2.0
-    relvol_min: float = 1.5
-    atr_pct_min: float = 2.0
-    spread_max_pct: float = 1.0  # spread bid/ask máximo aceptable, % del precio
+    precio_min: float = Field(5.0, gt=0)
+    precio_max: float = Field(500.0, gt=0)
+    volumen_promedio_min: int = Field(500_000, ge=0)
+    float_min: int = Field(10_000_000, ge=0)
+    variacion_diaria_min_pct: float = Field(2.0, ge=0)
+    relvol_min: float = Field(1.5, ge=0)
+    atr_pct_min: float = Field(2.0, ge=0)
+    spread_max_pct: float = Field(1.0, ge=0)  # spread bid/ask máximo aceptable, % del precio
 
     # ── Umbrales de los criterios objetivos ─────────────────────────────────
-    relvol_umbral_day: float = 3.0  # criterio 3: RelVol > X → day
-    relvol_umbral_swing_min: float = 1.5  # criterio 3: RelVol entre X e Y → swing
-    relvol_umbral_swing_max: float = 3.0
-    atr_pct_umbral_day: float = 3.0  # criterio 4: ATR% > X → day
-    atr_pct_umbral_swing_min: float = 1.5  # criterio 4: ATR% entre X e Y → swing
-    atr_pct_umbral_swing_max: float = 3.0
-    ivr_umbral_compra: float = 30.0  # criterio 6: IVR < X → señal day (opciones baratas)
-    ivr_umbral_venta: float = 50.0   # criterio 6: IVR > X → señal swing (opciones caras)
+    relvol_umbral_day: float = Field(3.0, gt=0)  # criterio 3: RelVol > X → day
+    relvol_umbral_swing_min: float = Field(1.5, ge=0)  # criterio 3: RelVol entre X e Y → swing
+    relvol_umbral_swing_max: float = Field(3.0, gt=0)
+    atr_pct_umbral_day: float = Field(3.0, gt=0)  # criterio 4: ATR% > X → day
+    atr_pct_umbral_swing_min: float = Field(1.5, ge=0)  # criterio 4: ATR% entre X e Y → swing
+    atr_pct_umbral_swing_max: float = Field(3.0, gt=0)
+    ivr_umbral_compra: float = Field(30.0, ge=0, le=100)  # criterio 6: IVR < X → señal day (opciones baratas)
+    ivr_umbral_venta: float = Field(50.0, ge=0, le=100)   # criterio 6: IVR > X → señal swing (opciones caras)
 
     # ── Pesos de los 6 criterios objetivos ────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
     # El "capital" no es un criterio puntuado — es un desempate aplicado en
     # evaluator._clasificar() cuando score_day == score_swing (ver CLAUDE.md).
-    peso_timeframe_setup: float = 1.0  # criterio 1
-    peso_catalizador: float = 1.0  # criterio 2
-    peso_relvol: float = 1.0  # criterio 3
-    peso_atr_pct: float = 1.0  # criterio 4
-    peso_sma200: float = 1.0  # criterio 5
-    peso_ivr: float = 1.0  # criterio 6
+    peso_timeframe_setup: float = Field(1.0, ge=0)  # criterio 1
+    peso_catalizador: float = Field(1.0, ge=0)  # criterio 2
+    peso_relvol: float = Field(1.0, ge=0)  # criterio 3
+    peso_atr_pct: float = Field(1.0, ge=0)  # criterio 4
+    peso_sma200: float = Field(1.0, ge=0)  # criterio 5
+    peso_ivr: float = Field(1.0, ge=0)  # criterio 6
 
     # ── Umbral de decisión ──────────────────────────────────────────────────
-    umbral_decision: float = 4.0  # score mínimo (sobre total ponderado) para clasificar
+    umbral_decision: float = Field(4.0, ge=0)  # score mínimo (sobre total ponderado) para clasificar
 
     # ── Gestión de posición ─────────────────────────────────────────────────
     modo_salida: ModoSalida = ModoSalida.FIXED_RR
-    rr_target: float = 2.0  # solo aplica si modo = FIXED_RR
-    stop_atr_multiplicador: float = 1.5
-    target_atr_multiplicador: float = 3.0  # referencia si no hay nivel técnico claro
-    trailing_activacion_r: float = 1.0  # mover stop a BE al alcanzar 1R
-    trailing_lock_r: float = 2.0  # mover stop a +1R al alcanzar 2R
-    riesgo_por_operacion_pct: float = 1.0
-    perdida_maxima_diaria_pct: float = 3.0
-    posiciones_simultaneas_max: int = 3
+    rr_target: float = Field(2.0, gt=0)  # solo aplica si modo = FIXED_RR
+    stop_atr_multiplicador: float = Field(1.5, gt=0)
+    target_atr_multiplicador: float = Field(3.0, gt=0)  # referencia si no hay nivel técnico claro
+    trailing_activacion_r: float = Field(1.0, ge=0)  # mover stop a BE al alcanzar 1R
+    trailing_lock_r: float = Field(2.0, ge=0)  # mover stop a +1R al alcanzar 2R
+    riesgo_por_operacion_pct: float = Field(1.0, gt=0, le=100)
+    perdida_maxima_diaria_pct: float = Field(3.0, gt=0, le=100)
+    posiciones_simultaneas_max: int = Field(3, gt=0)
 
     # ── Períodos de cálculo de indicadores ──────────────────────────────────
-    ema_rapida: int = 9
-    ema_media: int = 21
-    ema_lenta: int = 50
-    sma_tendencia: int = 200
-    rsi_periodo: int = 14
-    atr_periodo: int = 14
-    hv_periodo: int = 20  # ventana de volatilidad histórica realizada — proxy de IVR (ver criterio 6)
-    macd_rapida: int = 12
-    macd_lenta: int = 26
-    macd_signal: int = 9
-    bb_periodo: int = 20
-    bb_desviacion: float = 2.0
+    ema_rapida: int = Field(9, gt=0)
+    ema_media: int = Field(21, gt=0)
+    ema_lenta: int = Field(50, gt=0)
+    sma_tendencia: int = Field(200, gt=0)
+    rsi_periodo: int = Field(14, gt=0)
+    atr_periodo: int = Field(14, gt=0)
+    hv_periodo: int = Field(20, gt=0)  # ventana de volatilidad histórica realizada — proxy de IVR (ver criterio 6)
+    macd_rapida: int = Field(12, gt=0)
+    macd_lenta: int = Field(26, gt=0)
+    macd_signal: int = Field(9, gt=0)
+    bb_periodo: int = Field(20, gt=0)
+    bb_desviacion: float = Field(2.0, gt=0)
 
     # ── Velas a descargar por timeframe ─────────────────────────────────────
-    velas_5m: int = 78  # ~1 día de trading
-    velas_15m: int = 100  # ~5 días
-    velas_4h: int = 60  # ~3 meses
-    velas_diarias: int = 252  # ~1 año
+    velas_5m: int = Field(78, gt=0)  # ~1 día de trading
+    velas_15m: int = Field(100, gt=0)  # ~5 días
+    velas_4h: int = Field(60, gt=0)  # ~3 meses
+    velas_diarias: int = Field(252, gt=0)  # ~1 año
 
     # ── Períodos de cálculo de volumen ──────────────────────────────────────
-    relvol_periodo: int = 50  # ventana de velas para calcular el promedio de RelVol
+    relvol_periodo: int = Field(50, gt=0)  # ventana de velas para calcular el promedio de RelVol
 
     # ── Guardia contra clasificaciones con datos insuficientes ───────────────
     # Si menos de N criterios pudieron calcularse → DESCARTAR automáticamente.
     # Evita falsa confianza cuando faltan datos (ej: sin opciones → IVR None).
-    min_criterios_calculables: int = 4
+    # Hay 6 criterios objetivos en total (ver criteria.py) — no puede pedirse más que eso.
+    min_criterios_calculables: int = Field(4, ge=1, le=6)
 
     # ── Slippage para simulación realista ────────────────────────────────────
     # En day trading los fills perfectos sobreestiman retornos significativamente.
     # Aplica en entrada Y salida (ida y vuelta). Valor conservador: 5 bps por lado.
-    slippage_bps: float = 5.0
+    slippage_bps: float = Field(5.0, ge=0)
+
+    # ── Validaciones cruzadas entre campos relacionados ──────────────────────
+    @model_validator(mode="after")
+    def _validar_rangos_relacionados(self) -> "ScanConfig":
+        if self.precio_min >= self.precio_max:
+            raise ValueError("precio_min debe ser menor que precio_max")
+        if self.relvol_umbral_swing_min >= self.relvol_umbral_swing_max:
+            raise ValueError("relvol_umbral_swing_min debe ser menor que relvol_umbral_swing_max")
+        if self.atr_pct_umbral_swing_min >= self.atr_pct_umbral_swing_max:
+            raise ValueError("atr_pct_umbral_swing_min debe ser menor que atr_pct_umbral_swing_max")
+        if self.ivr_umbral_compra >= self.ivr_umbral_venta:
+            raise ValueError("ivr_umbral_compra debe ser menor que ivr_umbral_venta")
+        return self
 
 
 # ============================================================================

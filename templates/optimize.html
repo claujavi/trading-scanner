@@ -1,0 +1,62 @@
+{% extends "base.html" %}
+{% block title %}Optimizador — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:900px;">
+
+  <div class="section-header">
+    <div class="section-title">Optimizador de parámetros</div>
+  </div>
+
+  <div class="card">
+    <div class="card-title">Cómo funciona</div>
+    <p style="font-size:13px;color:var(--text-muted);">
+      Corre Optuna sobre el universo real de backtest (los CSV ya guardados en <code>input/</code>
+      e <code>input/processed/</code>), probando muchas combinaciones de umbrales, <code>rr_target</code>,
+      <code>stop_atr_multiplicador</code> y <code>slippage_bps</code> — los pesos de los 6 criterios
+      quedan fijos en 1.0. Cada trial es un backtest completo, así que 50-100 trials pueden tardar
+      1-2 horas. Por eso corre en background y esta página solo hace polling del progreso.
+    </p>
+  </div>
+
+  {% if error_bloqueo %}
+  <div class="card" style="border-color:var(--red);">
+    <div class="card-title" style="color:var(--red);">Bloqueado</div>
+    <p style="font-size:13px;">{{ error_bloqueo }}</p>
+  </div>
+  {% elif optimizador_bloqueado %}
+  <div class="card" style="border-color:var(--red);">
+    <div class="card-title" style="color:var(--red);">Optimizador bloqueado</div>
+    <p style="font-size:13px;">
+      No puede correr ahora — compite por CPU con el scanner en vivo. Va a estar disponible fuera
+      de 8:30–16:30 hora de Nueva York, lunes a viernes.
+    </p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">Nuevo run</div>
+    <form action="/optimize/run" method="post">
+      <div class="form-group">
+        <label>Cantidad de trials</label>
+        <input type="number" name="n_trials" value="50" min="1" required />
+        <div class="form-hint">Cada trial es un backtest completo del universo real — más trials, más tiempo.</div>
+      </div>
+      <div class="form-group">
+        <label>Trades objetivo (piso de confiabilidad del fitness)</label>
+        <input type="number" name="trades_objetivo" value="30" min="1" required />
+        <div class="form-hint">
+          A partir de esta cantidad de trades el fitness deja de penalizar por poca muestra. No es
+          un corte duro — configs con menos trades igual compiten, en desventaja gradual.
+        </div>
+      </div>
+      <button type="submit" class="btn btn-primary" {{ "disabled" if optimizador_bloqueado or estado.corriendo else "" }}>
+        Correr optimizador
+      </button>
+    </form>
+  </div>
+
+  <div id="optimize-status" hx-get="/optimize/status" hx-trigger="load, every 3s" hx-swap="innerHTML"></div>
+
+</div>
+{% endblock %}

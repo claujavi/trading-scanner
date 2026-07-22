@@ -1,8 +1,14 @@
 """
 metrics.py — agrega resultados de un backtest (ScanResult + simulación de
 cada señal operable) en un único BacktestRun.
+
+Este módulo calcula ÚNICAMENTE métricas objetivas de la estrategia —  nunca
+lógica de ranking, penalización, ni "qué config es mejor que otra". Esa
+decisión es responsabilidad exclusiva de optimizer/fitness.py, que consume
+EstrategiaMetrics sin que este módulo sepa que existe un optimizador.
 """
 
+from dataclasses import dataclass
 from datetime import date
 from typing import Optional
 
@@ -10,6 +16,22 @@ from ..models import BacktestRun, Clasificacion, ScanConfig, ScanResult
 from .simulator import ResultadoSimulacion
 
 ResultadoDia = tuple[ScanResult, Optional[ResultadoSimulacion]]
+
+
+@dataclass
+class EstrategiaMetrics:
+    """Métricas objetivas de una estrategia sobre un conjunto de trades
+    simulados, en múltiplos de R (no hay position sizing/capital real
+    trackeado en este sistema — ver simulator.py)."""
+
+    total_trades: int
+    win_rate: float          # % de trades con resultado_r > 0
+    net_profit_r: float      # suma de resultado_r de todos los trades
+    expectancy_r: float      # resultado_r promedio por trade
+    profit_factor: float     # suma ganancias / abs(suma pérdidas), en R
+    avg_win_r: float         # promedio de resultado_r entre trades ganadores
+    avg_loss_r: float        # promedio de resultado_r entre trades perdedores (negativo)
+    max_drawdown_r: float    # mayor caída pico-a-valle sobre la curva acumulada de R
 
 
 def _win_rate(simulaciones: list[ResultadoSimulacion]) -> float:
@@ -91,4 +113,26 @@ def calcular_metricas(
         señales_green=señales_green,
         señales_yellow=señales_yellow,
         señales_red=señales_red,
+    )
+
+
+def calcular_metricas_estrategia(simulaciones: list[ResultadoSimulacion]) -> EstrategiaMetrics:
+    """Métricas objetivas puras a partir de una lista de trades simulados.
+
+    Pensada para el optimizador: no depende de ScanResult/BacktestRun/config
+    ni de fechas/tickers — solo de los resultados de la simulación. Reusa los
+    mismos helpers privados que calcular_metricas() para no duplicar lógica.
+    """
+    ganadores = [s.resultado_r for s in simulaciones if s.resultado_r > 0]
+    perdedores = [s.resultado_r for s in simulaciones if s.resultado_r < 0]
+
+    return EstrategiaMetrics(
+        total_trades=len(simulaciones),
+        win_rate=_win_rate(simulaciones),
+        net_profit_r=sum(s.resultado_r for s in simulaciones),
+        expectancy_r=_rr_promedio(simulaciones),
+        profit_factor=_profit_factor(simulaciones),
+        avg_win_r=(sum(ganadores) / len(ganadores)) if ganadores else 0.0,
+        avg_loss_r=(sum(perdedores) / len(perdedores)) if perdedores else 0.0,
+        max_drawdown_r=_max_drawdown_r(simulaciones),
     )

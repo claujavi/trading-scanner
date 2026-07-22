@@ -42,6 +42,7 @@ class DatosTickerCompletos:
     volumen_promedio: Optional[float] = None
     bid: Optional[float] = None
     ask: Optional[float] = None
+    sin_historial_schwab: bool = False
 
 
 _CRITERIO_NOMBRES = [
@@ -180,6 +181,13 @@ def evaluar(datos: DatosTickerCompletos, config: ScanConfig) -> ScanResult:
 
     criterios_incompletos = [n for r, n in zip(resultados, _CRITERIO_NOMBRES) if r is None]
     criterios_calculados = len(resultados) - len(criterios_incompletos)
+
+    if datos.sin_historial_schwab:
+        # No es un criterio "no calculable" más — es la razón raíz de por qué
+        # ninguno de los que dependen de velas de Schwab pudo calcularse.
+        # Se antepone para que sea lo primero que vea el trader en el
+        # dashboard, no un genérico "faltan datos" sin explicación.
+        criterios_incompletos = ["SIN_HISTORIAL_SCHWAB"] + criterios_incompletos
 
     if criterios_calculados < config.min_criterios_calculables:
         return _build_result(

@@ -107,6 +107,7 @@ class TursoClient:
             (self.DDL_SCAN_CONFIGS, None),
             (self.DDL_BACKTEST_RUNS, None),
             (self.DDL_HISTORY_CACHE_META, None),
+            (self.DDL_TICKERS_SIN_HISTORIAL, None),
         ]
         await self._batch(statements)
 
@@ -342,6 +343,30 @@ class TursoClient:
         return rows[0] if rows else None
 
     # ────────────────────────────────────────────────────────────────────────
+    # TICKERS SIN HISTORIAL (cache negativo — Schwab confirmó que no hay datos)
+    # ────────────────────────────────────────────────────────────────────────
+
+    async def marcar_ticker_sin_historial(self, ticker: str, timeframe: str, motivo: str) -> None:
+        """Registra que Schwab confirmó no tener historial para este
+        ticker/timeframe — usado por schwab_history.py para no reintentar
+        en cada llamada (cada trial del optimizador, cada scan en vivo)."""
+        sql = """
+        INSERT INTO tickers_sin_historial (
+            ticker, timeframe, motivo, verificado_en
+        ) VALUES (?, ?, ?, ?)
+        ON CONFLICT(ticker, timeframe) DO UPDATE SET
+            motivo=excluded.motivo,
+            verificado_en=excluded.verificado_en
+        """
+        params = [ticker, timeframe, motivo, datetime.utcnow().isoformat()]
+        await self._execute(sql, params)
+
+    async def get_tickers_sin_historial(self) -> list[dict]:
+        """Carga completa — schwab_history.py la usa una sola vez para poblar
+        un cache en memoria del proceso, no una consulta por ticker."""
+        return await self._execute("SELECT * FROM tickers_sin_historial")
+
+    # ────────────────────────────────────────────────────────────────────────
     # DDL - SCHEMAS
     # ────────────────────────────────────────────────────────────────────────
 
@@ -453,6 +478,17 @@ class TursoClient:
         fecha_fin TEXT NOT NULL,
         archivo TEXT NOT NULL,
         descargado_en TEXT NOT NULL,
+        UNIQUE(ticker, timeframe)
+    )
+    """
+
+    DDL_TICKERS_SIN_HISTORIAL = """
+    CREATE TABLE IF NOT EXISTS tickers_sin_historial (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        motivo TEXT NOT NULL,
+        verificado_en TEXT NOT NULL,
         UNIQUE(ticker, timeframe)
     )
     """

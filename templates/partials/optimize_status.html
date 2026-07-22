@@ -1,0 +1,54 @@
+{% if estado.corriendo %}
+<div class="card">
+  <div class="card-title">Corriendo — trial {{ estado.trial_actual }}/{{ estado.n_trials }}</div>
+  {% if estado.mejor_fitness is not none %}
+  <p style="font-size:13px;">
+    Mejor fitness hasta ahora: <span class="mono">{{ "%.4f"|format(estado.mejor_fitness) }}</span>
+    ({{ estado.mejor_metrics.total_trades }} trades, expectancy
+    <span class="mono">{{ "%.3f"|format(estado.mejor_metrics.expectancy_r) }}R</span>)
+  </p>
+  {% else %}
+  <p style="font-size:13px;color:var(--text-muted);">Esperando el primer trial válido…</p>
+  {% endif %}
+</div>
+
+{% elif estado.error %}
+<div class="card" style="border-color:var(--red);">
+  <div class="card-title" style="color:var(--red);">Error</div>
+  <p style="font-size:13px;">{{ estado.error }}</p>
+</div>
+
+{% elif estado.resultado_final %}
+<div class="card">
+  <div class="card-title">
+    Run completo — fitness {{ "%.4f"|format(estado.resultado_final.mejor_fitness) }}
+    ({{ estado.resultado_final.n_trials_validos }}/{{ estado.resultado_final.n_trials }} trials válidos)
+  </div>
+
+  <table style="width:auto;margin-bottom:16px;">
+    <tbody>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Total trades</td><td class="mono">{{ estado.resultado_final.mejor_metrics.total_trades }}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Win rate</td><td class="mono">{{ "%.1f"|format(estado.resultado_final.mejor_metrics.win_rate) }}%</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Net profit (R)</td><td class="mono">{{ "%.2f"|format(estado.resultado_final.mejor_metrics.net_profit_r) }}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Expectancy (R/trade)</td><td class="mono">{{ "%.3f"|format(estado.resultado_final.mejor_metrics.expectancy_r) }}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Profit factor</td><td class="mono">{{ "%.2f"|format(estado.resultado_final.mejor_metrics.profit_factor) }}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Avg win (R)</td><td class="mono">{{ "%.3f"|format(estado.resultado_final.mejor_metrics.avg_win_r) }}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Avg loss (R)</td><td class="mono">{{ "%.3f"|format(estado.resultado_final.mejor_metrics.avg_loss_r) }}</td></tr>
+      <tr><td style="padding:4px 16px 4px 0;color:var(--text-muted);">Max drawdown (R)</td><td class="mono">{{ "%.2f"|format(estado.resultado_final.mejor_metrics.max_drawdown_r) }}</td></tr>
+    </tbody>
+  </table>
+
+  {% if estado.guardado %}
+  <p style="font-size:13px;color:var(--green);">Config guardada como nueva ScanConfig activa.</p>
+  {% else %}
+  <form action="/optimize/guardar" method="post">
+    <button type="submit" class="btn btn-primary">Guardar config ganadora como activa</button>
+  </form>
+  {% endif %}
+</div>
+
+{% else %}
+<div class="card">
+  <p style="font-size:13px;color:var(--text-muted);">Ningún run corrido todavía en esta sesión del servidor.</p>
+</div>
+{% endif %}

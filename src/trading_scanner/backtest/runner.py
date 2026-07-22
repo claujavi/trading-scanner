@@ -149,19 +149,9 @@ async def _evaluar_ticker_dia_impl(
     return result, simulacion
 
 
-async def run_backtest(
-    tickers: list[str], fecha_inicio: date, fecha_fin: date, config: ScanConfig
-) -> BacktestRun:
-    dias = _dias_habiles(fecha_inicio, fecha_fin)
-    console.log(
-        f"[green]Backtest iniciado: {len(tickers)} tickers x {len(dias)} días hábiles[/green]"
-    )
-
-    tareas = [
-        _evaluar_ticker_dia(ticker, fecha, config)
-        for fecha in dias
-        for ticker in tickers
-    ]
+async def _recolectar(tareas: list) -> list[ResultadoDia]:
+    """Lanza las tareas en paralelo, filtra excepciones y resultados None.
+    Compartido por recolectar_resultados() y recolectar_resultados_universo_real()."""
     crudos = await asyncio.gather(*tareas, return_exceptions=True)
 
     resultados: list[ResultadoDia] = []
@@ -173,11 +163,36 @@ async def run_backtest(
             resultados.append(item)
 
     console.log(
-        f"[green]Backtest completo: {len(resultados)} evaluaciones"
+        f"[green]Backtest: {len(resultados)} evaluaciones"
         + (f", {errores} errores" if errores else "")
         + "[/green]"
     )
+    return resultados
 
+
+async def recolectar_resultados(
+    tickers: list[str], fecha_inicio: date, fecha_fin: date, config: ScanConfig
+) -> list[ResultadoDia]:
+    """Evalúa+simula una lista fija de tickers contra todos los días hábiles
+    del rango, con la config dada. Usado por run_backtest() y, directamente
+    (sin pasar por calcular_metricas), por el optimizador para correr muchos
+    trials sin construir un BacktestRun completo en cada uno."""
+    dias = _dias_habiles(fecha_inicio, fecha_fin)
+    console.log(
+        f"[green]Backtest iniciado: {len(tickers)} tickers x {len(dias)} días hábiles[/green]"
+    )
+    tareas = [
+        _evaluar_ticker_dia(ticker, fecha, config)
+        for fecha in dias
+        for ticker in tickers
+    ]
+    return await _recolectar(tareas)
+
+
+async def run_backtest(
+    tickers: list[str], fecha_inicio: date, fecha_fin: date, config: ScanConfig
+) -> BacktestRun:
+    resultados = await recolectar_resultados(tickers, fecha_inicio, fecha_fin, config)
     return calcular_metricas(config, fecha_inicio, fecha_fin, tickers, resultados)
 
 
@@ -218,6 +233,24 @@ def universo_real_csv(input_folder: Path) -> dict[date, list[str]]:
     return {fecha: sorted(tks) for fecha, tks in sorted(por_dia.items())}
 
 
+async def recolectar_resultados_universo_real(
+    universo: dict[date, list[str]], config: ScanConfig
+) -> list[ResultadoDia]:
+    """Evalúa+simula el universo real (día → tickers que salieron ese día en
+    un CSV guardado) con la config dada. Recibe `universo` ya calculado para
+    que el optimizador lo compute una sola vez fuera del loop de trials
+    (universo_real_csv() no depende de la config, solo de los CSV en disco)."""
+    console.log(
+        f"[green]Backtest universo real: {len(universo)} días con CSV guardado[/green]"
+    )
+    tareas = [
+        _evaluar_ticker_dia(ticker, fecha, config)
+        for fecha, tickers in universo.items()
+        for ticker in tickers
+    ]
+    return await _recolectar(tareas)
+
+
 async def run_backtest_universo_real(config: ScanConfig, input_folder: Path) -> BacktestRun:
     """Backtest fiel al universo real: cada ticker solo se evalúa los días
     en que efectivamente apareció en un CSV de ToS guardado por el trader —
@@ -230,30 +263,7 @@ async def run_backtest_universo_real(config: ScanConfig, input_folder: Path) -> 
             "para reconstruir el universo real."
         )
 
-    console.log(
-        f"[green]Backtest universo real: {len(universo)} días con CSV guardado[/green]"
-    )
-
-    tareas = [
-        _evaluar_ticker_dia(ticker, fecha, config)
-        for fecha, tickers in universo.items()
-        for ticker in tickers
-    ]
-    crudos = await asyncio.gather(*tareas, return_exceptions=True)
-
-    resultados: list[ResultadoDia] = []
-    errores = 0
-    for item in crudos:
-        if isinstance(item, Exception):
-            errores += 1
-        elif item is not None:
-            resultados.append(item)
-
-    console.log(
-        f"[green]Backtest universo real completo: {len(resultados)} evaluaciones"
-        + (f", {errores} errores" if errores else "")
-        + "[/green]"
-    )
+    resultados = await recolectar_resultados_universo_real(universo, config)
 
     todos_tickers = sorted({t for tickers in universo.values() for t in tickers})
     fechas = sorted(universo.keys())

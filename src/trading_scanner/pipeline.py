@@ -169,6 +169,7 @@ async def process_ticker(
         volumen_promedio=volumen_promedio,
         bid=ticker_data.bid,
         ask=ticker_data.ask,
+        sin_historial_schwab=df_d.is_empty(),
     )
 
     result = evaluar(datos, config)

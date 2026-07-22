@@ -175,6 +175,16 @@ FERIADOS_NYSE_FALLBACK: set[date] = {
 _VENTANA_INICIO = dtime(7, 0)
 _VENTANA_FIN = dtime(17, 0)
 
+# Ventana específica del bloqueo del optimizador (api/optimize.py) — más
+# angosta que _VENTANA_INICIO/_VENTANA_FIN de arriba, que existen para otra
+# cosa (decidir cuándo vale la pena chequear el estado de conexión Schwab, no
+# para minimizar el riesgo de competir por CPU con Optuna). El trader corre
+# el scanner ~30 min antes de la apertura (9:30 NY) y el stream puede seguir
+# activo un rato después del cierre (16:00) cerrando posiciones — de ahí
+# 8:30–16:30, no la ventana amplia de pre/post-market de _en_horario_habil().
+_VENTANA_BLOQUEO_OPTIMIZADOR_INICIO = dtime(8, 30)
+_VENTANA_BLOQUEO_OPTIMIZADOR_FIN = dtime(16, 30)
+
 # Cache de feriados por año — se piden una sola vez a Trading Calendar y
 # quedan en memoria el resto de la vida del proceso (los feriados de un
 # año no cambian una vez publicados).
@@ -202,10 +212,8 @@ async def _obtener_feriados(year: int) -> set[date]:
     return feriados
 
 
-async def _en_horario_habil() -> bool:
-    """Ventana amplia en hora de Nueva York (7:00–17:00 ET, lun-vie, sin
-    feriados NYSE) — cubre pre-market (cuando llega el CSV de ToS y el
-    pipeline sí necesita Schwab en vivo) hasta un rato después del cierre.
+async def _en_ventana(inicio: dtime, fin: dtime) -> bool:
+    """Lun-vie, sin feriados NYSE, dentro de [inicio, fin] hora de Nueva York.
 
     Usar ZoneInfo("America/New_York") evita calcular a mano el offset
     entre Argentina y Nueva York, que cambia con el horario de verano/
@@ -217,7 +225,31 @@ async def _en_horario_habil() -> bool:
     feriados = await _obtener_feriados(ahora.year)
     if ahora.date() in feriados:
         return False
-    return _VENTANA_INICIO <= ahora.time() <= _VENTANA_FIN
+    return inicio <= ahora.time() <= fin
+
+
+async def _en_horario_habil() -> bool:
+    """Ventana amplia (7:00–17:00 ET) — cubre pre-market (cuando llega el CSV
+    de ToS y el pipeline sí necesita Schwab en vivo) hasta un rato después del
+    cierre. Usada para decidir cuándo vale la pena verificar la conexión
+    Schwab en vivo (estado_conexion()), no para el bloqueo del optimizador."""
+    return await _en_ventana(_VENTANA_INICIO, _VENTANA_FIN)
+
+
+async def en_horario_habil() -> bool:
+    """Wrapper público de _en_horario_habil() — usado donde se necesite saber
+    si vale la pena golpear a Schwab en vivo (no confundir con
+    en_ventana_bloqueo_optimizador(), que es una ventana distinta y más
+    angosta pensada específicamente para el optimizador)."""
+    return await _en_horario_habil()
+
+
+async def en_ventana_bloqueo_optimizador() -> bool:
+    """8:30–16:30 ET — ventana en la que api/optimize.py bloquea sin
+    excepción el botón de correr el optimizador (compite por CPU con el
+    scanner en vivo). Ver comentario junto a _VENTANA_BLOQUEO_OPTIMIZADOR_*
+    arriba sobre por qué es distinta de en_horario_habil()."""
+    return await _en_ventana(_VENTANA_BLOQUEO_OPTIMIZADOR_INICIO, _VENTANA_BLOQUEO_OPTIMIZADOR_FIN)
 
 
 # Cache corto del resultado de _verificar_conexion_real(): cada carga de

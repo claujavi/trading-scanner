@@ -1,13 +1,52 @@
 import asyncio
 from datetime import datetime, timedelta
 from pathlib import Path
-from typing import Literal
+from typing import Literal, Optional
 
 import polars as pl
 
+from ..database import db
 from .schwab_client import get_client
 
 Timeframe = Literal["5m", "15m", "4h", "d"]
+
+# Cache negativo: cuando Schwab confirma que no tiene historial para un
+# ticker/timeframe (SPACs recién listados, warrants, preferred shares OTC,
+# etc. — "basura" para este sistema, no un error transitorio), se registra
+# acá para no volver a golpear a Schwab por lo mismo. Es el único choke
+# point que llaman tanto pipeline.py (scan en vivo) como history_cache.py
+# (backtest/optimizador) — un solo cache sirve a los dos casos.
+#
+# TTL de 30 días (no permanente): Schwab podría agregar cobertura de un
+# instrumento más adelante, y no hay forma de saberlo sin volver a intentar
+# de vez en cuando.
+_TTL_SIN_HISTORIAL = timedelta(days=30)
+_sin_historial_cache: Optional[dict[tuple[str, str], datetime]] = None
+
+
+async def _cargar_sin_historial_cache() -> dict[tuple[str, str], datetime]:
+    global _sin_historial_cache
+    if _sin_historial_cache is None:
+        filas = await db.get_tickers_sin_historial()
+        _sin_historial_cache = {
+            (f["ticker"], f["timeframe"]): datetime.fromisoformat(f["verificado_en"])
+            for f in filas
+        }
+    return _sin_historial_cache
+
+
+async def _tiene_historial_confirmado_vacio(ticker: str, timeframe: str) -> bool:
+    cache = await _cargar_sin_historial_cache()
+    verificado_en = cache.get((ticker, timeframe))
+    if verificado_en is None:
+        return False
+    return (datetime.utcnow() - verificado_en) < _TTL_SIN_HISTORIAL
+
+
+async def _marcar_sin_historial(ticker: str, timeframe: str, motivo: str) -> None:
+    cache = await _cargar_sin_historial_cache()
+    cache[(ticker, timeframe)] = datetime.utcnow()
+    await db.marcar_ticker_sin_historial(ticker, timeframe, motivo)
 
 
 def _compute_start_datetime(timeframe: Timeframe, n_periods: int) -> datetime:
@@ -191,5 +230,22 @@ def get_history(ticker: str, timeframe: Timeframe, n_periods: int) -> pl.DataFra
     return df
 
 
+_MOTIVO_SIN_DATOS = "No se pudo parsear el historial de Schwab: respuesta vacía"
+
+
 async def get_history_async(ticker: str, timeframe: Timeframe, n_periods: int) -> pl.DataFrame:
-    return await asyncio.to_thread(get_history, ticker, timeframe, n_periods)
+    if await _tiene_historial_confirmado_vacio(ticker, timeframe):
+        raise RuntimeError(
+            f"Sin historial confirmado para {ticker} ({timeframe}) — Schwab no cubre "
+            "este instrumento (cache negativo, ver tickers_sin_historial)."
+        )
+
+    try:
+        return await asyncio.to_thread(get_history, ticker, timeframe, n_periods)
+    except RuntimeError as exc:
+        # Solo cachear la falla "definitiva" (respuesta sin velas en absoluto) —
+        # otros RuntimeError (cliente sin inicializar, HTTP 5xx) pueden ser
+        # transitorios y no deben blacklistear el ticker permanentemente.
+        if _MOTIVO_SIN_DATOS in str(exc):
+            await _marcar_sin_historial(ticker, timeframe, str(exc))
+        raise

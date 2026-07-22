@@ -28,6 +28,7 @@ from rich.console import Console
 
 from .api.backtest import router as backtest_router
 from .api.config import router as config_router
+from .api.optimize import router as optimize_router
 from .api.scan import _dedupe_latest_por_ticker
 from .api.scan import router as scan_router
 from .api.schwab import router as schwab_router
@@ -194,6 +195,7 @@ app.include_router(ticker_router)
 app.include_router(config_router)
 app.include_router(backtest_router)
 app.include_router(stream_router)
+app.include_router(optimize_router)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────

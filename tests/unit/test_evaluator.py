@@ -153,3 +153,32 @@ def test_slippage_no_afecta_score():
 
     assert resultado_base.score_day == pytest.approx(resultado_alto_slippage.score_day)
     assert resultado_base.score_swing == pytest.approx(resultado_alto_slippage.score_swing)
+
+
+def test_sin_historial_schwab_agrega_tag_y_termina_en_descartar():
+    config = ScanConfig()
+    datos = make_base_data(
+        sin_historial_schwab=True,
+        relvol=None,
+        atr_pct=None,
+        sobre_sma200=None,
+        cruce_ema_921_5m=None,
+        cruce_ema_921_15m=None,
+        cruce_ema_921_4h=None,
+        cruce_ema_921_d=None,
+        ivr=None,
+    )
+
+    resultado = evaluar(datos, config)
+
+    assert resultado.criterios_incompletos[0] == "SIN_HISTORIAL_SCHWAB"
+    assert resultado.clasificacion == Clasificacion.DESCARTAR
+
+
+def test_sin_historial_schwab_false_no_agrega_tag():
+    config = ScanConfig()
+    datos = make_base_data(sin_historial_schwab=False)
+
+    resultado = evaluar(datos, config)
+
+    assert "SIN_HISTORIAL_SCHWAB" not in resultado.criterios_incompletos
