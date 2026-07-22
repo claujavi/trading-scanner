@@ -1,14 +1,25 @@
 {% if estado.corriendo %}
-<div class="card">
-  <div class="card-title">Corriendo — trial {{ estado.trial_actual }}/{{ estado.n_trials }}</div>
+<div class="card" style="border-color:var(--accent);">
+  <div class="card-title">⏳ Corriendo — trial {{ estado.trial_actual }}/{{ estado.n_trials }}</div>
+  <div class="score-bar-wrap" style="min-width:100%;margin-bottom:10px;">
+    <div class="score-bar" style="height:8px;">
+      <div class="score-bar-fill fill-conf" style="width:{{ (estado.trial_actual / estado.n_trials * 100) if estado.n_trials else 0 }}%;"></div>
+    </div>
+    <span class="score-val mono">{{ ((estado.trial_actual / estado.n_trials * 100) if estado.n_trials else 0) | round | int }}%</span>
+  </div>
   {% if estado.mejor_fitness is not none %}
   <p style="font-size:13px;">
     Mejor fitness hasta ahora: <span class="mono">{{ "%.4f"|format(estado.mejor_fitness) }}</span>
     ({{ estado.mejor_metrics.total_trades }} trades, expectancy
     <span class="mono">{{ "%.3f"|format(estado.mejor_metrics.expectancy_r) }}R</span>)
   </p>
+  {% elif estado.trial_actual == 0 %}
+  <p style="font-size:13px;color:var(--text-muted);">Corriendo el primer trial — puede tardar varios minutos si hay que descargar historial de Schwab…</p>
   {% else %}
-  <p style="font-size:13px;color:var(--text-muted);">Esperando el primer trial válido…</p>
+  <p style="font-size:13px;color:var(--text-muted);">
+    Ningún trial encontró trades todavía ({{ estado.trial_actual }} corridos) — puede ser normal si
+    el universo es chico; si sigue así hasta el final, revisar universo/umbrales.
+  </p>
   {% endif %}
 </div>
 

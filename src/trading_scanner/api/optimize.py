@@ -1,8 +1,9 @@
 """
 Endpoints del optimizador de parámetros.
 
-GET  /optimize          → formulario (n_trials, trades_objetivo) + progreso
-                           de un run en curso, o el resultado del último run
+GET  /optimize          → formulario (n_trials, trades_objetivo, universo
+                           real/curado) + progreso de un run en curso, o el
+                           resultado del último run
 POST /optimize/run       → dispara el optimizador en background
                            (asyncio.create_task) — nunca bloquea el request.
                            Bloqueado SIN excepción entre 8:30–16:30 hora de
@@ -12,24 +13,30 @@ POST /optimize/run       → dispara el optimizador en background
                            de conexión Schwab): Optuna corre docenas de
                            backtests completos y compite por CPU con el
                            scanner en vivo, que puede estar activo.
-GET  /optimize/status    → partial HTMX con el progreso actual (polling)
+GET  /optimize/status    → partial HTMX con el progreso actual (polling, dentro de /optimize)
+GET  /optimize/badge     → badge compacto para el header (visible desde cualquier página,
+                           mismo patrón que el badge de /stream/status en base.html)
 POST /optimize/guardar   → persiste la config ganadora del último run
                            (scan_configs + backtest_runs), reemplaza al
                            typer.confirm() del CLI para el mismo flujo.
 """
 
 import asyncio
+from datetime import date
 from pathlib import Path
+from typing import Optional
 
 from fastapi import APIRouter, Form, Request
 from fastapi.responses import HTMLResponse, RedirectResponse
 
 from ..config import settings
 from ..database import db
+from ..fetchers import history_cache
 from ..fetchers.schwab_client import en_ventana_bloqueo_optimizador, estado_conexion
 from ..optimizer import state as optimizer_state
 from ..optimizer.fitness import FitnessConfig
 from ..optimizer.study import construir_backtest_run_final, optimizar
+from ..optimizer.universo import FuenteUniverso, universo_curado, universo_real
 from ..pipeline import get_active_config
 
 router = APIRouter(prefix="/optimize", tags=["Optimizer"])
@@ -37,11 +44,20 @@ router = APIRouter(prefix="/optimize", tags=["Optimizer"])
 _INPUT_FOLDER = Path(settings.input_folder)
 
 
+def _parse_tickers(raw: str) -> list[str]:
+    separadores = raw.replace(",", "\n").replace(" ", "\n")
+    return sorted({t.strip().upper() for t in separadores.splitlines() if t.strip()})
+
+
 async def _base_context() -> dict:
+    tickers_cache = history_cache.tickers_cacheados("d")
+    rango_cache = history_cache.rango_cacheado("d")
     return {
         "mock_schwab": settings.mock_schwab,
         "schwab_estado": await estado_conexion(),
         "optimizador_bloqueado": await en_ventana_bloqueo_optimizador(),
+        "tickers_cacheados": tickers_cache,
+        "rango_cacheado": rango_cache,
     }
 
 
@@ -59,8 +75,9 @@ async def get_optimize_page(request: Request):
     )
 
 
-async def _correr_en_background(n_trials: int, trades_objetivo: int) -> None:
+async def _correr_en_background(fuente: FuenteUniverso, n_trials: int, trades_objetivo: int) -> None:
     estado = optimizer_state.get_estado()
+    estado.fuente = fuente
 
     def _on_trial(trial_num: int, fitness: float, metrics) -> None:
         estado.trial_actual = trial_num
@@ -73,7 +90,7 @@ async def _correr_en_background(n_trials: int, trades_objetivo: int) -> None:
         fitness_config = FitnessConfig(trades_objetivo=trades_objetivo)
         resultado = await optimizar(
             config_base,
-            _INPUT_FOLDER,
+            fuente,
             n_trials,
             fitness_config,
             on_trial=_on_trial,
@@ -90,6 +107,10 @@ async def run_optimizer(
     request: Request,
     n_trials: int = Form(50),
     trades_objetivo: int = Form(30),
+    universo: str = Form("real"),
+    tickers: Optional[str] = Form(None),
+    fecha_inicio: Optional[str] = Form(None),
+    fecha_fin: Optional[str] = Form(None),
 ):
     if await en_ventana_bloqueo_optimizador():
         templates = request.app.state.templates
@@ -107,8 +128,30 @@ async def run_optimizer(
             status_code=409,
         )
 
+    try:
+        if universo == "curado":
+            fuente = universo_curado(
+                _parse_tickers(tickers or ""),
+                date.fromisoformat(fecha_inicio) if fecha_inicio else date.today(),
+                date.fromisoformat(fecha_fin) if fecha_fin else date.today(),
+            )
+        else:
+            fuente = universo_real(_INPUT_FOLDER)
+    except ValueError as exc:
+        templates = request.app.state.templates
+        return templates.TemplateResponse(
+            request=request,
+            name="optimize.html",
+            context={
+                "estado": optimizer_state.get_estado(),
+                "error_bloqueo": str(exc),
+                **await _base_context(),
+            },
+            status_code=400,
+        )
+
     optimizer_state.reset_estado(n_trials)
-    asyncio.create_task(_correr_en_background(n_trials, trades_objetivo))
+    asyncio.create_task(_correr_en_background(fuente, n_trials, trades_objetivo))
     return RedirectResponse("/optimize", status_code=303)
 
 
@@ -122,15 +165,23 @@ async def get_status_partial(request: Request):
     )
 
 
+@router.get("/badge", response_class=HTMLResponse)
+async def get_badge_partial(request: Request):
+    templates = request.app.state.templates
+    return templates.TemplateResponse(
+        request=request,
+        name="partials/optimizer_badge.html",
+        context={"estado": optimizer_state.get_estado()},
+    )
+
+
 @router.post("/guardar")
 async def guardar_config_ganadora(request: Request):
     estado = optimizer_state.get_estado()
-    if estado.resultado_final is None:
+    if estado.resultado_final is None or estado.fuente is None:
         return RedirectResponse("/optimize", status_code=303)
 
-    backtest_run = await construir_backtest_run_final(
-        estado.resultado_final.mejor_config, _INPUT_FOLDER
-    )
+    backtest_run = await construir_backtest_run_final(estado.resultado_final.mejor_config, estado.fuente)
     await db.insert_scan_config(estado.resultado_final.mejor_config.model_dump(mode="json"))
     await db.insert_backtest_run(backtest_run.model_dump(mode="json"))
     estado.guardado = True

@@ -1,20 +1,20 @@
 """
-study.py — orquesta la búsqueda de Optuna sobre el universo real de backtest.
+study.py — orquesta la búsqueda de Optuna sobre una fuente de universo
+(optimizer/universo.py: real o curado — este módulo no sabe cuál).
 
 Usa la API ask/tell de Optuna (en vez de study.optimize con un callback
 síncrono) para integrarse limpio con el event loop async ya existente en el
-proyecto — cada trial corre recolectar_resultados_universo_real(), que es
-una corrutina.
+proyecto — cada trial corre FuenteUniverso.recolectar(config), que es una
+corrutina.
 
 No se persiste cada trial en Turso: Optuna corre en memoria durante todo el
-comando (ver optimizer/cli.py). Al final, correr_optimizacion() reconstruye
-la config ganadora y corre el backtest completo una vez más para producir un
-BacktestRun persistible con la infraestructura ya existente (calcular_metricas
-+ db.insert_backtest_run), sin duplicar esa lógica acá.
+comando (ver optimizer/cli.py). Al final, construir_backtest_run_final()
+reconstruye la config ganadora y corre el backtest completo una vez más para
+producir un BacktestRun persistible con la infraestructura ya existente
+(calcular_metricas + db.insert_backtest_run), sin duplicar esa lógica acá.
 """
 
 from dataclasses import dataclass
-from pathlib import Path
 from typing import Callable, Optional
 
 import optuna
@@ -22,10 +22,10 @@ from pydantic import ValidationError
 from rich.console import Console
 
 from ..backtest.metrics import EstrategiaMetrics, calcular_metricas, calcular_metricas_estrategia
-from ..backtest.runner import recolectar_resultados_universo_real, universo_real_csv
 from ..models import BacktestRun, ScanConfig
 from .fitness import FitnessConfig, calcular_fitness
 from .search_space import sugerir_config
+from .universo import FuenteUniverso
 
 # (trial_num, fitness, metrics) — llamado después de cada trial. No sabe nada
 # de Turso ni de HTTP: quien lo pasa (api/optimize.py) decide qué hacer con
@@ -49,18 +49,11 @@ class OptimizerResultado:
 
 async def optimizar(
     config_base: ScanConfig,
-    input_folder: Path,
+    fuente: FuenteUniverso,
     n_trials: int,
     fitness_config: FitnessConfig,
     on_trial: Optional[OnTrialCallback] = None,
 ) -> OptimizerResultado:
-    universo = universo_real_csv(input_folder)
-    if not universo:
-        raise ValueError(
-            "No hay CSV históricos guardados en input/ ni input/processed/ "
-            "para reconstruir el universo real."
-        )
-
     study = optuna.create_study(direction="maximize")
     n_validos = 0
 
@@ -73,7 +66,7 @@ async def optimizar(
             console.log(f"[yellow]Trial {i}: config inválida descartada ({exc})[/yellow]")
             continue
 
-        resultados = await recolectar_resultados_universo_real(universo, config)
+        resultados = await fuente.recolectar(config)
         simulaciones = [s for _, s in resultados if s is not None]
         metrics = calcular_metricas_estrategia(simulaciones)
         fitness = calcular_fitness(metrics, fitness_config)
@@ -102,13 +95,10 @@ async def optimizar(
     )
 
 
-async def construir_backtest_run_final(mejor_config: ScanConfig, input_folder: Path) -> BacktestRun:
+async def construir_backtest_run_final(mejor_config: ScanConfig, fuente: FuenteUniverso) -> BacktestRun:
     """Corre un backtest completo (no un trial recortado) de la config
     ganadora para producir un BacktestRun persistible. Compartido por
     optimizer/cli.py y api/optimize.py para no duplicar esta lógica en los
     dos puntos de entrada (CLI y web) que guardan el resultado."""
-    universo = universo_real_csv(input_folder)
-    resultados = await recolectar_resultados_universo_real(universo, mejor_config)
-    todos_tickers = sorted({t for tickers in universo.values() for t in tickers})
-    fechas = sorted(universo.keys())
-    return calcular_metricas(mejor_config, fechas[0], fechas[-1], todos_tickers, resultados)
+    resultados = await fuente.recolectar(mejor_config)
+    return calcular_metricas(mejor_config, fuente.fecha_inicio, fuente.fecha_fin, fuente.tickers, resultados)

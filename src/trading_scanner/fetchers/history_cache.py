@@ -113,3 +113,46 @@ async def get_history(
 
     await _save_partitions(ticker, timeframe, df)
     return _filter_range(df, fecha_inicio, fecha_fin)
+
+
+def tickers_cacheados(timeframe: str = "d") -> list[str]:
+    """Tickers que ya tienen al menos un Parquet cacheado para ese timeframe
+    en backtest_data/ — usado por el optimizador (universo curado) para no
+    obligar a elegir tickers a mano si ya hay historial descargado de
+    corridas anteriores."""
+    root = settings.backtest_data_path
+    if not root.exists():
+        return []
+    return sorted(
+        p.name
+        for p in root.iterdir()
+        if p.is_dir() and any((p / timeframe).glob("*/*.parquet"))
+    )
+
+
+def rango_cacheado(timeframe: str = "d") -> Optional[Tuple[date, date]]:
+    """Rango (mes más antiguo, mes más reciente) cubierto por los Parquet
+    cacheados de ese timeframe, leído de los nombres de carpeta/archivo
+    (year/month.parquet) — no abre los archivos, es solo para mostrar al
+    usuario qué rango no va a disparar descargas nuevas a Schwab."""
+    root = settings.backtest_data_path
+    if not root.exists():
+        return None
+
+    meses = [
+        (int(p.parent.name), int(p.stem))
+        for p in root.glob(f"*/{timeframe}/*/*.parquet")
+    ]
+    if not meses:
+        return None
+
+    meses.sort()
+    year_min, month_min = meses[0]
+    year_max, month_max = meses[-1]
+
+    fecha_inicio = date(year_min, month_min, 1)
+    if month_max == 12:
+        fecha_fin = date(year_max, 12, 31)
+    else:
+        fecha_fin = date(year_max, month_max + 1, 1) - timedelta(days=1)
+    return fecha_inicio, fecha_fin

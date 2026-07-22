@@ -1,0 +1,13 @@
+{% if estado.corriendo %}
+  <a href="/optimize" class="nav-badge badge-mock" style="text-decoration:none;" title="Ver progreso">
+    ⏳ OPTIMIZADOR {{ estado.trial_actual }}/{{ estado.n_trials }}
+  </a>
+{% elif estado.resultado_final and not estado.guardado %}
+  <a href="/optimize" class="nav-badge badge-online" style="text-decoration:none;" title="Run terminado, revisar resultado">
+    OPTIMIZADOR LISTO
+  </a>
+{% elif estado.error %}
+  <a href="/optimize" class="nav-badge badge-offline" style="text-decoration:none;" title="{{ estado.error }}">
+    OPTIMIZADOR: ERROR
+  </a>
+{% endif %}

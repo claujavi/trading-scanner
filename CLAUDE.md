@@ -59,9 +59,12 @@ MOCK_SCHWAB=true uv run uvicorn trading_scanner.main:app --host 0.0.0.0 --port 8
 ```
 Sprint 1 — Ingesta CSV + Schwab API + evaluador básico   [x] validado con datos reales
 Sprint 2 — Dashboard + clasificación + streaming         [x] completo — streaming validado end-to-end
-                                                              con MOCK_SCHWAB=true; el StreamManager real
-                                                              (schwab.streaming) todavía no se probó en
-                                                              horario de mercado con token real
+                                                              con MOCK_SCHWAB=true Y con el StreamManager
+                                                              real (Modo Schwab: REAL, badge STREAM ON +
+                                                              Schwab ON LINE) contra Schwab en vivo el
+                                                              2026-07-22, 21 tickers suscritos,
+                                                              reevaluaciones y reclasificaciones en tiempo
+                                                              real observadas en el dashboard
 Sprint 3 — Persistencia + backtesting                    [x] completo — universo real (CSV guardados) +
                                                               universo curado como chequeo secundario
 Sprint 4 — Optimizador de parámetros                     [x] completo — validado end-to-end con
@@ -117,11 +120,31 @@ Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futu
   sin cambios de frontend. El descubrimiento incremental (CSV nuevo intra-sesión) agrega tickers a
   la suscripción existente sin reiniciar el WebSocket. Validado end-to-end con `MOCK_SCHWAB=true`
   (pipeline → seed del cache → stream → evento → reevaluación → persistencia → dashboard, y
-  descubrimiento incremental sin reiniciar conexión) — **el `StreamManager` real todavía no se
-  probó contra Schwab en horario de mercado** (requiere token real y sesión abierta).
+  descubrimiento incremental sin reiniciar conexión) **y con el `StreamManager` real contra Schwab
+  en vivo** (2026-07-22, `Modo Schwab: REAL`, badges `STREAM ON` + Schwab `ON LINE`, token de 2
+  días de antigüedad — 21 tickers suscritos vía `schwab.streaming.StreamClient`, reevaluaciones en
+  tiempo real observadas en consola y reclasificaciones reflejadas en el dashboard sin recargar la
+  página). Cierra el único gap grande que quedaba abierto de Sprint 2.
 - **Optimizador de parámetros (Sprint 4)**: `optimizer/` usa Optuna (API `ask`/`tell`, no
   `study.optimize()` con callback sync, para integrarse con el event loop async existente) sobre
-  el universo real de `backtest/runner.py::recolectar_resultados_universo_real()`. Por regla de
+  una `optimizer/universo.py::FuenteUniverso` (tickers/fechas + un `recolectar(config)` async) —
+  `study.py` no sabe ni le importa de dónde salen los datos. Dos fuentes intercambiables:
+  `universo_real(input_folder)` (fiel a los CSV guardados, la fuente correcta para calibrar según
+  este archivo, pero limitada a los días ya exportados) y `universo_curado(tickers, fecha_inicio,
+  fecha_fin)` (lista fija contra un rango arbitrario — años de historial de Schwab vía
+  `recolectar_resultados()`, más volumen de datos mientras se acumulan días reales, pero mide algo
+  distinto: qué tan bien puntúa el evaluador sobre nombres ya sabidos como volátiles, no fidelidad
+  de descubrimiento real — cualquier config que salga de acá debería revalidarse después contra
+  `universo_real()`). Elegible tanto desde el CLI (`--universo real|curado` + `--tickers`/
+  `--fecha-inicio`/`--fecha-fin`) como desde `/optimize` (radio buttons + campos que se muestran
+  solo para curado; `optimizer/state.py` guarda la `FuenteUniverso` del run en curso para que
+  `POST /optimize/guardar` sepa con qué recolectar el `BacktestRun` final). Para curado, no hace
+  falta elegir tickers a mano: `history_cache.py::tickers_cacheados()`/`rango_cacheado()` leen
+  `backtest_data/` (nombres de carpeta `{ticker}/{timeframe}/{year}/{month}.parquet`, sin abrir
+  los archivos) y la web muestra cuántos tickers y qué rango ya está cacheado (278 tickers,
+  2024-03 → 2026-07 al momento de escribir esto — de un backtest de 149 tickers corrido en
+  Sprint 3, que fue creciendo con el uso), con un botón "usar todos los cacheados" que llena el
+  form — usar ese universo no dispara descargas nuevas a Schwab. Por regla de
   este archivo, solo optimiza umbrales/`rr_target`/`stop_atr_multiplicador`/`slippage_bps` —
   nunca los `peso_*` (`optimizer/search_space.py`, con sampling dependiente en los pares min/max
   para que Optuna jamás genere un `ScanConfig` inválido). Separación estricta pedida
@@ -141,8 +164,15 @@ Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futu
   2. **Web** (`api/optimize.py`, página `/optimize`): `POST /optimize/run` dispara el run en
      background (`asyncio.create_task`, nunca bloquea el request) y la página hace polling cada 3s
      de `GET /optimize/status` (mismo patrón HTMX que `/stream/status`) contra un estado en memoria
-     (`optimizer/state.py`, un solo run a la vez). **Bloqueado sin excepción entre 8:30–16:30 hora
-     de Nueva York** (`fetchers/schwab_client.py::en_ventana_bloqueo_optimizador()`) — no hay
+     (`optimizer/state.py`, un solo run a la vez), con barra de progreso real (`trial_actual/
+     n_trials`). Además, `GET /optimize/badge` (`templates/partials/optimizer_badge.html`) agrega
+     un badge compacto en el header (`base.html`, polling cada 5s) — visible desde **cualquier
+     página**, no solo `/optimize`, para que quede claro que hay un run corriendo aunque el trader
+     haya navegado a otra parte (motivado por confusión real: tocar "correr optimizador" y no ver
+     ninguna señal fuera de logs de servidor en la terminal). Vacío si no hay nada corriendo;
+     "OPTIMIZADOR LISTO" si terminó sin guardar; "OPTIMIZADOR: ERROR" si falló. **Bloqueado sin
+     excepción entre 8:30–16:30 hora de Nueva York** (`fetchers/schwab_client.py::
+     en_ventana_bloqueo_optimizador()`) — no hay
      override ni confirmación posible, el botón directamente no dispara el run: Optuna corriendo
      decenas de backtests completos compite por CPU con el scanner en vivo, y "preservación del
      capital es prioridad absoluta" ya es un principio de este archivo. **Esta ventana es propia
@@ -294,9 +324,11 @@ Cada elección está tomada. No proponer alternativas salvo que una librería es
 │  POST /backtest/run        → corre backtest, persiste, redirige│
 │  GET  /backtest/{id}       → detalle de un run                 │
 │                                                           │
-│  GET  /optimize            → form (n_trials, trades_objetivo) + progreso│
+│  GET  /optimize            → form (n_trials, trades_objetivo, universo)│
 │  POST /optimize/run        → dispara en background (asyncio.create_task)│
 │  GET  /optimize/status     → partial HTMX, polling del progreso         │
+│  GET  /optimize/badge      → badge compacto en el header, visible desde │
+│  cualquier página (mismo patrón que /stream/status)                     │
 │  POST /optimize/guardar    → persiste la config ganadora del último run │
 │  (bloqueado sin excepción en horario hábil — ver más abajo)              │
 └──────────────────────────┬──────────────────────────────┘
@@ -368,7 +400,9 @@ trading-scanner/
 │       │   ├── market_data_cache.py   ← MarketDataCache + TickerCache: estado en memoria por ticker
 │       │   │                            suscrito, detección de eventos significativos (VWAP/EMA 5m/
 │       │   │                            RelVol/nuevo máx-mín), snapshot() → DatosTickerCompletos
-│       │   ├── history_cache.py       ← cache de Parquet, usado por backtest/runner.py
+│       │   ├── history_cache.py       ← cache de Parquet, usado por backtest/runner.py.
+│       │   │                            tickers_cacheados()/rango_cacheado() — introspección
+│       │   │                            para el optimizador (universo curado), sin abrir archivos
 │       │   └── calendar_client.py    ← GET localhost:8000/events/{ticker}/24h
 │       │
 │       ├── indicators/
@@ -392,6 +426,9 @@ trading-scanner/
 │       │                                (solo métricas objetivas en R, sin ranking — usado por optimizer/)
 │       │
 │       ├── optimizer/                 ← completo — Sprint 4
+│       │   ├── universo.py            ← FuenteUniverso (tickers/fechas + recolectar(config) async).
+│       │   │                            universo_real(input_folder) y universo_curado(tickers,
+│       │   │                            fecha_inicio, fecha_fin) — study.py es agnóstico a cuál se usa.
 │       │   ├── search_space.py        ← sugerir_config(trial, config_base) -> ScanConfig. Solo
 │       │   │                            samplea umbrales/rr_target/stop_atr_multiplicador/
 │       │   │                            slippage_bps (peso_* quedan fijos en 1.0, ver CLAUDE.md).
@@ -401,16 +438,20 @@ trading-scanner/
 │       │   │                            de ranking, deliberadamente separada de metrics.py. Penaliza
 │       │   │                            gradualmente (sigmoide) la baja cantidad de trades, sin
 │       │   │                            corte duro.
-│       │   ├── study.py               ← optimizar(): loop Optuna con API ask/tell (no
-│       │   │                            study.optimize() con callback sync) para integrarse con el
-│       │   │                            event loop async existente. on_trial callback opcional
-│       │   │                            (usado por api/optimize.py para progreso, no por el CLI).
-│       │   │                            construir_backtest_run_final() compartida por CLI y web.
+│       │   ├── study.py               ← optimizar(config_base, fuente: FuenteUniverso, ...): loop
+│       │   │                            Optuna con API ask/tell (no study.optimize() con callback
+│       │   │                            sync) para integrarse con el event loop async existente.
+│       │   │                            on_trial callback opcional (usado por api/optimize.py para
+│       │   │                            progreso, no por el CLI). construir_backtest_run_final()
+│       │   │                            compartida por CLI y web.
 │       │   ├── state.py               ← progreso en memoria de un run en curso (un solo run a la
-│       │   │                            vez), para que api/optimize.py haga polling — no persiste
-│       │   │                            a Turso.
+│       │   │                            vez, incluye la FuenteUniverso usada), para que
+│       │   │                            api/optimize.py haga polling y sepa qué guardar — no
+│       │   │                            persiste a Turso.
 │       │   └── cli.py                 ← Typer, comando separado (`trading-scanner-optimize`,
-│       │                                registrado en pyproject.toml). Confirma antes de guardar.
+│       │                                registrado en pyproject.toml). `--universo real|curado` +
+│       │                                `--tickers`/`--fecha-inicio`/`--fecha-fin` para curado.
+│       │                                Confirma antes de guardar.
 │       │
 │       └── api/
 │           ├── scan.py                ← scan (upload CSV, latest, partial, history) — usa
@@ -1143,7 +1184,7 @@ pasando fechas históricas en lugar de "hoy".
 
 El evaluador es una función pura — es el componente más crítico y el más fácil de testear.
 
-**Cobertura real actual (89 tests, todos pasan, `not integration and not slow`):**
+**Cobertura real actual (99 tests, todos pasan, `not integration and not slow`):**
 ```
 tests/unit/test_csv_parser.py         → parseo CSV ToS, cascada de variación diaria, columnas faltantes
 tests/unit/test_evaluator.py          → clasificación DAY/SWING/empate/descarte, pesos, criterios incompletos
@@ -1160,13 +1201,19 @@ tests/unit/test_fitness.py            → calcular_fitness: mayor expectancy/men
                                          trades, 0 trades → -inf, cap de profit factor
 tests/unit/test_search_space.py       → sugerir_config nunca genera un ScanConfig inválido (20
                                          seeds + FixedTrial), nunca toca los peso_*
-tests/unit/test_optimizer_study.py    → optimizar() con recolectar_resultados_universo_real
-                                         monkeypatcheado (sin red): selecciona el trial de mayor
-                                         fitness, maneja trials con 0 trades sin romper
+tests/unit/test_optimizer_study.py    → optimizar() con una FuenteUniverso fake (sin red): selecciona
+                                         el trial de mayor fitness, maneja trials con 0 trades sin
+                                         romper; construir_backtest_run_final() usa la fuente dada
+tests/unit/test_optimizer_universo.py → universo_real()/universo_curado(): ValueError si no hay CSV
+                                         o no hay tickers o fecha_inicio>fecha_fin, metadata
+                                         (tickers/fechas) consistente con lo que recolectar() usa
 tests/unit/test_schwab_history_negativo.py → cache negativo de tickers_sin_historial: marca y
                                          relanza en la primera falla definitiva, no vuelve a
                                          llamar a Schwab en la segunda, errores transitorios
                                          (HTTP 5xx) no se cachean, TTL vencido reintenta
+tests/unit/test_history_cache_introspeccion.py → tickers_cacheados()/rango_cacheado(): sin carpeta
+                                         devuelve vacío/None, filtra por timeframe, calcula
+                                         min/max entre varios tickers (incl. fin de mes en diciembre)
 ```
 La cobertura de `evaluator.py` y `csv_parser.py` quedó repartida en `test_evaluator.py` y
 `test_csv_parser.py` en vez de los nombres originalmente planeados (`test_criteria.py`,

@@ -11,11 +11,18 @@
   <div class="card">
     <div class="card-title">Cómo funciona</div>
     <p style="font-size:13px;color:var(--text-muted);">
-      Corre Optuna sobre el universo real de backtest (los CSV ya guardados en <code>input/</code>
-      e <code>input/processed/</code>), probando muchas combinaciones de umbrales, <code>rr_target</code>,
+      Corre Optuna probando muchas combinaciones de umbrales, <code>rr_target</code>,
       <code>stop_atr_multiplicador</code> y <code>slippage_bps</code> — los pesos de los 6 criterios
       quedan fijos en 1.0. Cada trial es un backtest completo, así que 50-100 trials pueden tardar
       1-2 horas. Por eso corre en background y esta página solo hace polling del progreso.
+    </p>
+    <p style="font-size:13px;color:var(--text-muted);">
+      <strong>Universo real:</strong> fiel a los CSV ya guardados en <code>input/</code> e
+      <code>input/processed/</code> — la fuente correcta para calibrar, pero limitada a esos días.
+      <strong>Universo curado:</strong> lista fija de tickers contra un rango de fechas arbitrario
+      (años de historial de Schwab) — más volumen de datos mientras se acumulan más días reales,
+      pero mide algo distinto (qué tan bien puntúa el evaluador sobre nombres ya sabidos como
+      volátiles, no fidelidad de descubrimiento real). Revalidar después contra universo real.
     </p>
   </div>
 
@@ -38,9 +45,64 @@
     <div class="card-title">Nuevo run</div>
     <form action="/optimize/run" method="post">
       <div class="form-group">
+        <label>Universo</label>
+        <div style="display:flex;gap:16px;margin-top:4px;">
+          <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+            <input type="radio" name="universo" value="real" checked
+                   onchange="document.getElementById('campos-curado').style.display='none'" />
+            Real (CSV guardados)
+          </label>
+          <label style="display:flex;align-items:center;gap:6px;font-weight:normal;">
+            <input type="radio" name="universo" value="curado"
+                   onchange="document.getElementById('campos-curado').style.display='block'" />
+            Curado (lista fija + rango de fechas)
+          </label>
+        </div>
+      </div>
+
+      <div id="campos-curado" style="display:none;">
+        {% if tickers_cacheados %}
+        <div class="form-hint" style="margin-bottom:8px;">
+          {{ tickers_cacheados | length }} tickers ya tienen historial diario cacheado
+          {% if rango_cacheado %}({{ rango_cacheado[0].isoformat() }} → {{ rango_cacheado[1].isoformat() }}){% endif %}
+          — usarlos no dispara descargas nuevas a Schwab.
+          <button type="button" class="btn btn-secondary" style="padding:2px 10px;font-size:11px;margin-left:6px;"
+                  onclick="usarTickersCacheados()">Usar todos los cacheados</button>
+        </div>
+        {% else %}
+        <div class="form-hint" style="margin-bottom:8px;">
+          Todavía no hay tickers con historial cacheado — la primera corrida sobre tickers nuevos
+          va a descargar de Schwab.
+        </div>
+        {% endif %}
+        <div class="form-group">
+          <label>Tickers (separados por coma, espacio o salto de línea)</label>
+          <textarea id="tickers-curado" name="tickers" rows="2" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 12px;font-size:13px;font-family:'Consolas',monospace;" placeholder="AAPL, TSLA, NVDA"></textarea>
+        </div>
+        <div class="form-group">
+          <label>Fecha inicio</label>
+          <input id="fecha-inicio-curado" type="date" name="fecha_inicio" {% if rango_cacheado %}value="{{ rango_cacheado[0].isoformat() }}"{% endif %} />
+        </div>
+        <div class="form-group">
+          <label>Fecha fin</label>
+          <input id="fecha-fin-curado" type="date" name="fecha_fin" {% if rango_cacheado %}value="{{ rango_cacheado[1].isoformat() }}"{% endif %} />
+        </div>
+      </div>
+
+      <script>
+        function usarTickersCacheados() {
+          document.getElementById('tickers-curado').value = {{ tickers_cacheados | tojson }}.join(', ');
+          {% if rango_cacheado %}
+          document.getElementById('fecha-inicio-curado').value = {{ rango_cacheado[0].isoformat() | tojson }};
+          document.getElementById('fecha-fin-curado').value = {{ rango_cacheado[1].isoformat() | tojson }};
+          {% endif %}
+        }
+      </script>
+
+      <div class="form-group">
         <label>Cantidad de trials</label>
         <input type="number" name="n_trials" value="50" min="1" required />
-        <div class="form-hint">Cada trial es un backtest completo del universo real — más trials, más tiempo.</div>
+        <div class="form-hint">Cada trial es un backtest completo del universo elegido — más trials, más tiempo.</div>
       </div>
       <div class="form-group">
         <label>Trades objetivo (piso de confiabilidad del fitness)</label>

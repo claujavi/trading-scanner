@@ -17,6 +17,7 @@ from ..backtest.metrics import EstrategiaMetrics
 
 if TYPE_CHECKING:
     from .study import OptimizerResultado
+    from .universo import FuenteUniverso
 
 
 @dataclass
@@ -27,6 +28,10 @@ class OptimizerEstado:
     mejor_fitness: Optional[float] = None
     mejor_metrics: Optional[EstrategiaMetrics] = None
     resultado_final: Optional["OptimizerResultado"] = None
+    # Fuente de universo usada en este run — necesaria en /optimize/guardar
+    # para recolectar los resultados finales con la misma config/universo
+    # sin que api/optimize.py tenga que recordarlo por su cuenta.
+    fuente: Optional["FuenteUniverso"] = None
     error: Optional[str] = None
     guardado: bool = False
 
