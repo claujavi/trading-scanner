@@ -10,6 +10,13 @@ from .schwab_client import get_client
 
 Timeframe = Literal["5m", "15m", "4h", "d"]
 
+
+class SchwabRateLimitError(RuntimeError):
+    """Schwab devolvió 429 (rate limit). Distinto de otros RuntimeError para
+    que quien llame (ej. cli_precarga.py) pueda aplicar backoff largo en vez
+    de tratarlo como una falla definitiva — un 429 no significa que el
+    ticker no tenga datos, solo que hay que esperar y reintentar."""
+
 # Cache negativo: cuando Schwab confirma que no tiene historial para un
 # ticker/timeframe (SPACs recién listados, warrants, preferred shares OTC,
 # etc. — "basura" para este sistema, no un error transitorio), se registra
@@ -217,6 +224,8 @@ def get_history(ticker: str, timeframe: Timeframe, n_periods: int) -> pl.DataFra
             need_previous_close=False,
         )
 
+    if resp.status_code == 429:
+        raise SchwabRateLimitError(f"Rate limit de Schwab (429): {resp.text}")
     if resp.status_code != 200:
         raise RuntimeError(
             f"Error al descargar historial Schwab: {resp.status_code} {resp.text}"

@@ -26,6 +26,7 @@ dependencies = [
 
 [project.scripts]
 trading-scanner-optimize = "trading_scanner.optimizer.cli:app"
+trading-scanner-precargar-historico = "trading_scanner.cli_precarga:app"
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

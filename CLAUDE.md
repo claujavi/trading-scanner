@@ -382,6 +382,10 @@ trading-scanner/
 │       ├── main.py                    ← FastAPI app + lifespan + CSV watcher
 │       ├── pipeline.py                ← orquesta pre-market completo (CSV → Schwab → evaluador →
 │       │                                cache → stream) y expone get_active_config()
+│       ├── cli_precarga.py            ← Typer, comando separado (`trading-scanner-precargar-
+│       │                                historico`, registrado en pyproject.toml). Llena
+│       │                                backtest_data/ secuencialmente con backoff largo ante
+│       │                                429 de Schwab — pensado para correr desatendido
 │       │
 │       ├── ingest/
 │       │   ├── csv_watcher.py         ← watchdog: detecta CSV nuevo en /input/
@@ -402,7 +406,9 @@ trading-scanner/
 │       │   │                            RelVol/nuevo máx-mín), snapshot() → DatosTickerCompletos
 │       │   ├── history_cache.py       ← cache de Parquet, usado por backtest/runner.py.
 │       │   │                            tickers_cacheados()/rango_cacheado() — introspección
-│       │   │                            para el optimizador (universo curado), sin abrir archivos
+│       │   │                            para el optimizador (universo curado), sin abrir archivos.
+│       │   │                            esta_cacheado() — usado por cli_precarga.py para saber si
+│       │   │                            un pedido va a tocar la red o no
 │       │   └── calendar_client.py    ← GET localhost:8000/events/{ticker}/24h
 │       │
 │       ├── indicators/
@@ -1323,6 +1329,62 @@ Los datos históricos de Schwab solo tienen acciones que todavía existen o coti
 Acciones que quebraron o fueron deslistadas no aparecen. Esto es un sesgo conocido
 que hay que documentar en los resultados del backtester. **No intentar corregirlo en el MVP**
 — es aceptable para calibración de parámetros, no para auditoría de retornos absolutos.
+
+**Precarga masiva del cache — `cli_precarga.py` (`trading-scanner-precargar-historico`):**
+Comando Typer separado (registrado en `pyproject.toml [project.scripts]`, mismo patrón que
+`trading-scanner-optimize`) para llenar `backtest_data/` de antemano, sin depender de que un
+backtest o el optimizador vayan disparando las descargas sobre la marcha. Pensado para dejarlo
+corriendo desatendido horas o incluso días.
+
+```bash
+uv run trading-scanner-precargar-historico
+uv run trading-scanner-precargar-historico --tickers AAPL,TSLA \
+    --fecha-inicio 2024-01-01 --fecha-fin 2026-07-22 --timeframes d,4h,15m,5m
+```
+
+- Sin `--tickers`, usa `history_cache.tickers_cacheados("d")` (el universo ya conocido); sin
+  `--fecha-inicio`, usa `history_cache.rango_cacheado("d")` como punto de partida. Sin `--timeframes`,
+  precarga los 4 (`d, 4h, 15m, 5m`).
+- **Deliberadamente secuencial y lento** (`pausa` entre pedidos reales, default 1.5s) — a
+  diferencia del backtest/optimizador, que ya tienen su propio límite de concurrencia pero están
+  pensados para correr una vez con lo que ya está cacheado, no para llenar el cache desde cero.
+  Pedir muchos tickers x timeframes seguido dispara un 429 de Schwab (ya pasó en Sprint 3 y de
+  nuevo con el optimizador de universo curado sobre rango sin intradía cacheado).
+- `history_cache.esta_cacheado(ticker, timeframe, fecha_inicio, fecha_fin)` (nueva función) decide
+  si un pedido va a tocar la red o no — la pausa de `pausa` segundos **solo** se aplica después de
+  un pedido que sí pegó contra Schwab, nunca entre pedidos que ya estaban resueltos en Parquet.
+- `schwab_history.SchwabRateLimitError` (nueva excepción, subclase de `RuntimeError`) distingue un
+  429 de una falla definitiva: ante un 429 el comando hace backoff exponencial sin límite de
+  intentos (tope configurable con `--max-espera`, default 600s) y reintenta el mismo pedido en vez
+  de descartarlo; cualquier otro error se loguea y se sigue con la siguiente combinación
+  ticker/timeframe, sin reintentar (mismo criterio que `backtest/runner.py`).
+- Seguro de interrumpir con Ctrl+C y volver a correr: no mantiene estado propio — al reiniciar,
+  `esta_cacheado()`/`get_history()` retoman exactamente donde quedó, saltando lo que ya esté en
+  Parquet.
+- Probado 2026-07-23 contra Schwab real (`MOCK_SCHWAB=false`, token vivo): un pedido nuevo
+  (AAPL, diario, jun-jul 2026) generó los `.parquet` esperados; repetir el mismo pedido lo detectó
+  como `esta_cacheado()` y no volvió a tocar la red (sin pausa, sin llamada HTTP).
+
+**Profundidad real de historial de Schwab por timeframe — probado 2026-07-23 con AAPL, no
+supuesto:** `schwab_history.get_history()` siempre pide en **una sola llamada** desde "ahora" hacia
+atrás (ver comentario en `history_cache.get_history()`), así que no tiene sentido pedir por etapas
+de N meses pensando en ahorrar requests — es 1 sola llamada por ticker/timeframe sin importar
+cuánto pidas. Lo que sí importa es hasta dónde Schwab realmente tiene datos, porque una `fecha_inicio`
+más vieja que eso no tira error — Schwab devuelve igual `status_code == 200` y trunca en silencio
+al período que sí tiene, sin avisar. Confirmado pidiendo explícitamente rangos viejos:
+- **Diario (`d`):** Schwab devolvió velas de AAPL hasta **2002-07** (23+ años) en una sola llamada
+  — pero esa llamada tardó **~3.5 minutos** para un solo ticker. Para la precarga del universo real
+  no vale la pena pedir "todo lo que exista": usar `fecha_inicio=2023-01-01` (~2.5 años, alcanza
+  de sobra para calibrar swing) en vez de dejar el default sin acotar.
+- **Intradía (`4h`/`15m`/`5m`):** por más atrás que se pida (se probó con `fecha_inicio=2024-01-01`),
+  Schwab trunca a **~nov/dic 2025** (7-9 meses de profundidad real) — no hay manera de conseguir
+  más historial intradía de Schwab por esta vía, así que pedir una fecha más vieja que esa para
+  estos 3 timeframes es pura pérdida de tiempo (la llamada igual tarda, y el resultado es el mismo
+  que pedir desde nov-2025). Usar `fecha_inicio=2025-11-01` para estos tres.
+- Consecuencia práctica para `cli_precarga.py`: no correrlo con un único `--fecha-inicio` para
+  los 4 timeframes a la vez si se quiere ir más atrás en diario que en intradía — correrlo en dos
+  invocaciones, una para `--timeframes d --fecha-inicio 2023-01-01` y otra para
+  `--timeframes 4h,15m,5m --fecha-inicio 2025-11-01`.
 
 ### Universo histórico
 

@@ -79,6 +79,18 @@ async def _save_partitions(ticker: str, timeframe: str, df: pl.DataFrame) -> Non
         )
 
 
+def esta_cacheado(ticker: str, timeframe: str, fecha_inicio: date, fecha_fin: date) -> bool:
+    """True si TODOS los meses del rango ya tienen Parquet — o sea,
+    get_history() no va a tocar la red para este pedido. Usado por
+    cli_precarga.py para no pausar entre pedidos que ya estaban cacheados
+    (solo hace falta el ritmo de espera cuando sí se golpea Schwab)."""
+    partition_root = settings.backtest_data_path / ticker / timeframe
+    return all(
+        (partition_root / str(year) / f"{month:02}.parquet").exists()
+        for year, month in _month_list(fecha_inicio, fecha_fin)
+    )
+
+
 async def get_history(
     ticker: str,
     timeframe: str,
