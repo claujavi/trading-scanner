@@ -2,11 +2,13 @@
 Endpoints de scan.
 
 GET  /scan/latest    → JSON: resultados de hoy ordenados por confianza
-GET  /scan/partial   → HTML: tabla para HTMX polling desde el dashboard
-GET  /scan/history   → HTML: historial de los últimos 30 días
-POST /scan/upload    → recibe CSV manual, corre pipeline, redirige a /
+GET  /scan/partial     → HTML: tabla para HTMX polling desde el dashboard
+GET  /scan/history     → HTML: historial de los últimos 30 días
+POST /scan/upload      → recibe CSV manual, corre pipeline, redirige a /
+POST /scan/refrescar   → procesa backlog de input/ (botón "Actualizar") + tabla
 """
 
+import asyncio
 import json
 import tempfile
 from datetime import date
@@ -68,8 +70,7 @@ async def get_latest(request: Request):
     return JSONResponse(content=rows)
 
 
-@router.get("/partial", response_class=HTMLResponse)
-async def get_partial(request: Request):
+async def _render_scan_table(request: Request) -> HTMLResponse:
     try:
         rows = await db.get_scan_results_by_date(date.today().isoformat())
     except Exception:
@@ -82,6 +83,25 @@ async def get_partial(request: Request):
         name="partials/scan_table.html",
         context={"results": rows},
     )
+
+
+@router.get("/partial", response_class=HTMLResponse)
+async def get_partial(request: Request):
+    return await _render_scan_table(request)
+
+
+@router.post("/refrescar", response_class=HTMLResponse)
+async def refrescar(request: Request):
+    """Botón "Actualizar" del dashboard: además de traer la tabla más
+    reciente, procesa cualquier CSV que haya quedado sin procesar en
+    input/ (soltado mientras el servidor estaba caído — ver
+    CSVWatcher.procesar_backlog). El pipeline de los CSV encontrados se
+    dispara en background vía run_coroutine_threadsafe; esta respuesta no
+    espera a que termine, el polling de 30s ya en curso lo va a reflejar."""
+    watcher = getattr(request.app.state, "csv_watcher", None)
+    if watcher is not None:
+        await asyncio.to_thread(watcher.procesar_backlog)
+    return await _render_scan_table(request)
 
 
 @router.get("/history", response_class=HTMLResponse)

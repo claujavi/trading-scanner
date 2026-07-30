@@ -96,19 +96,41 @@ class CSVWatcher:
         self.pipeline_callback = pipeline_callback
         self.loop = loop
         self.observer = Observer()
+        self.handler: Optional[CsvWatchHandler] = None
 
     def start(self) -> None:
         self.input_folder.mkdir(parents=True, exist_ok=True)
         self.processed_folder.mkdir(parents=True, exist_ok=True)
-        handler = CsvWatchHandler(
+        self.handler = CsvWatchHandler(
             self.input_folder,
             self.processed_folder,
             pipeline_callback=self.pipeline_callback,
             loop=self.loop,
         )
-        self.observer.schedule(handler, str(self.input_folder), recursive=False)
+        self.observer.schedule(self.handler, str(self.input_folder), recursive=False)
         self.observer.start()
         console.log(f"[green]CSV watcher iniciado en {self.input_folder}[/green]")
+
+    def procesar_backlog(self) -> int:
+        """Procesa cualquier .csv que ya esté en input_folder al momento de
+        llamar esto — cubre el caso de un CSV soltado mientras el servidor
+        estaba caído o todavía no había arrancado el watcher, ya que
+        watchdog solo reacciona a eventos de filesystem ocurridos con el
+        proceso vivo, no hace un escaneo de lo preexistente por sí solo.
+        Reusa el mismo `_handle_file` que dispara on_created, así que
+        procesa, mueve a processed/ y dispara el pipeline igual que un CSV
+        nuevo. Devuelve la cantidad de archivos encontrados."""
+        if self.handler is None:
+            self.handler = CsvWatchHandler(
+                self.input_folder,
+                self.processed_folder,
+                pipeline_callback=self.pipeline_callback,
+                loop=self.loop,
+            )
+        archivos = sorted(self.input_folder.glob("*.csv"))
+        for path in archivos:
+            self.handler._handle_file(path)
+        return len(archivos)
 
     def stop(self) -> None:
         if self.observer.is_alive():

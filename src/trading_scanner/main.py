@@ -157,6 +157,13 @@ async def lifespan(app: FastAPI):
     csv_watcher.start()
     app.state.csv_watcher = csv_watcher
 
+    # CSV soltado en input/ mientras el servidor estaba caído — watchdog
+    # solo ve eventos con el proceso vivo, así que sin esto se queda ahí
+    # sin procesar indefinidamente (ver también /scan/refrescar).
+    backlog = await asyncio.to_thread(csv_watcher.procesar_backlog)
+    if backlog:
+        console.log(f"[green]Backlog: {backlog} CSV pendiente(s) en input/ procesados[/green]")
+
     console.log(f"[green]Trading Scanner en http://localhost:{settings.scanner_port}[/green]")
     if settings.mock_schwab:
         console.log("[yellow]MOCK_SCHWAB=true — datos sinteticos activos[/yellow]")
