@@ -72,6 +72,35 @@ def test_optimizar_corre_n_trials_y_devuelve_el_mejor(monkeypatch):
     assert resultado.mejor_metrics.total_trades == n_esperado
 
 
+def test_optimizar_con_storage_retoma_donde_quedo(tmp_path):
+    """Simula un run interrumpido: corre 3 trials persistidos en SQLite,
+    después vuelve a llamar a optimizar() con el mismo storage/study_name
+    pidiendo 5 trials en total — debe correr solo 2 trials MÁS (no repetir
+    los primeros 3 ni arrancar de cero), y el study final debe tener 5."""
+    fuente = _fuente_fake()
+    storage = f"sqlite:///{tmp_path / 'optuna.db3'}"
+    study_name = "test-resume"
+
+    trials_corridos = []
+    study_module_original_optimizar = study_module.optimizar
+
+    async def _correr(n_trials):
+        return await study_module_original_optimizar(
+            ScanConfig(),
+            fuente,
+            n_trials=n_trials,
+            fitness_config=FitnessConfig(trades_objetivo=5),
+            storage=storage,
+            study_name=study_name,
+        )
+
+    resultado_parcial = asyncio.run(_correr(3))
+    assert resultado_parcial.n_trials_validos == 3
+
+    resultado_final = asyncio.run(_correr(5))
+    assert resultado_final.n_trials_validos == 5
+
+
 def test_construir_backtest_run_final_usa_la_fuente_dada():
     fuente = _fuente_fake()
 

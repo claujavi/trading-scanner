@@ -7,7 +7,7 @@ from ..models import ScanConfig
 
 
 def _above_ma(df: pl.DataFrame, periodo: int, use_ema: bool) -> Optional[bool]:
-    if df is None or df.is_empty() or "close" not in df.columns:
+    if df is None or len(df) == 0 or "close" not in df.columns:
         return None
     series = calc_ema(df, periodo) if use_ema else calc_sma(df, periodo)
     values = series.to_list()
@@ -22,7 +22,7 @@ def _above_ma(df: pl.DataFrame, periodo: int, use_ema: bool) -> Optional[bool]:
 
 
 def _safe_cruce(df: Optional[pl.DataFrame], rapida: int, lenta: int) -> Optional[bool]:
-    if df is None or df.is_empty():
+    if df is None or len(df) == 0:
         return None
     return detect_cruce_ema(df, rapida, lenta)
 

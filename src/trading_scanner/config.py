@@ -38,6 +38,10 @@ class Settings(BaseSettings):
     # Cache local de datos históricos para backtesting
     backtest_data_path: Path = Path("./backtest_data")
 
+    # Estado persistente del optimizador (Optuna SQLite) — permite retomar
+    # un run interrumpido en vez de reiniciar desde el trial 0
+    optimizer_state_path: Path = Path("./optimizer_state")
+
     # Modo mock: genera datos OHLCV sintéticos sin necesitar Schwab
     mock_schwab: bool = False
 

@@ -8,14 +8,12 @@ from typing import Optional
 from zoneinfo import ZoneInfo
 
 import httpx
-from rich.console import Console
 
 import schwab.auth as schwab_auth
 import schwab.client as schwab_client
 
 from ..config import settings
-
-console = Console()
+from ..logging_setup import console
 
 APPDATA = os.environ.get("APPDATA")
 if not APPDATA:

@@ -24,8 +24,6 @@ from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 from fastapi.templating import Jinja2Templates
 
-from rich.console import Console
-
 from .api.backtest import router as backtest_router
 from .api.config import router as config_router
 from .api.optimize import router as optimize_router
@@ -42,8 +40,7 @@ from .fetchers.schwab_client import estado_conexion
 from .fetchers.schwab_stream import crear_stream_manager
 from .ingest.csv_parser import parse_csv
 from .ingest.csv_watcher import CSVWatcher
-
-console = Console()
+from .logging_setup import console
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _TEMPLATES_DIR = _PROJECT_ROOT / "templates"

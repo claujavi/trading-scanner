@@ -28,32 +28,32 @@ from datetime import date, datetime, timedelta
 from pathlib import Path
 from typing import Optional
 
+import pandas as pd
 import polars as pl
-from rich.console import Console
 
 from ..engine.evaluator import DatosTickerCompletos, evaluar
-from ..engine.signals import detect_setup_timeframe
 from ..fetchers import history_cache
 from ..indicators.volume import calc_hv_rank
 from ..ingest.csv_parser import parse_csv
+from ..logging_setup import console
 from ..models import BacktestRun, Clasificacion, FuenteDatos, ScanConfig
-from ..pipeline import _calcular_atr_pct, _calcular_relvol, _calcular_volumen_promedio
+from ..pipeline import _calcular_relvol, _calcular_volumen_promedio
 from .metrics import ResultadoDia, calcular_metricas
 from .simulator import simular
 
-console = Console()
-
-# Límite de concurrencia contra Schwab. Sin esto, un backtest con muchos
-# tickers x muchos días lanza miles de conexiones simultáneas: en Windows
-# el selector de asyncio tiene un tope bajo de file descriptors (revienta
-# con "too many file descriptors in select()"), y Schwab devuelve 403
-# (bloqueo del WAF/Akamai) ante ráfagas grandes de requests concurrentes.
-#
-# Cada tarea (_evaluar_ticker_dia) dispara internamente hasta 4-5 llamadas
-# a Schwab en paralelo (d/4h/15m/5m + velas del día para la simulación), así
-# que un límite de 5 tareas concurrentes ya implica ~20-25 conexiones Schwab
-# simultáneas — suficiente margen bajo el límite de sockets de Windows y
-# lejos del umbral que dispara el bloqueo de Schwab.
+# Límite de concurrencia. Antes acotaba tareas por (ticker, día) — con un
+# universo curado de años x cientos de tickers eso son cientos de miles de
+# tareas, cada una releyendo y reconcatenando los mismos Parquet del ticker
+# una vez por día evaluado (ver historial de perf: un run de 287 tickers x
+# ~930 días hábiles tardó >22hs sin terminar ni el primer trial de 50). Desde
+# que la unidad de concurrencia pasó a ser el ticker (ver
+# _evaluar_ticker_para_dias más abajo, que carga el contexto de cada
+# ticker UNA sola vez y después recorre sus días en memoria), este límite ya
+# no protege contra una explosión de tareas — solo sigue siendo relevante
+# para no abrir demasiadas conexiones reales a Schwab si el cache está
+# incompleto y hace falta ir a la red. Mismo valor de siempre (5) por eso:
+# ~4-5 llamadas Schwab por ticker si hay cache miss, 5 tickers concurrentes
+# ≈ 20-25 conexiones, el mismo margen ya validado contra el bloqueo 403.
 _SCHWAB_CONCURRENCY = asyncio.Semaphore(5)
 
 
@@ -67,41 +67,167 @@ def _dias_habiles(inicio: date, fin: date) -> list[date]:
     return dias
 
 
-async def _evaluar_ticker_dia(
-    ticker: str, fecha: date, config: ScanConfig
-) -> Optional[ResultadoDia]:
-    async with _SCHWAB_CONCURRENCY:
-        return await _evaluar_ticker_dia_impl(ticker, fecha, config)
+def _a_pandas_indexado(df: pl.DataFrame) -> pd.DataFrame:
+    """Convierte una sola vez por ticker (no una vez por día) a pandas con
+    índice de tiempo ordenado — las funciones de indicators/trend.py y
+    indicators/volume.py ya aceptan pandas directamente sin re-convertir
+    (`_to_pandas()` solo convierte si recibe un pl.DataFrame; si ya es
+    pandas, lo devuelve tal cual). Antes, cada una de las ~933 evaluaciones
+    por ticker recortaba con Polars y cada función de indicador volvía a
+    convertir esa porción a pandas — con años de historial x cientos de
+    tickers, esa conversión repetida (933 días x ~8 conversiones por día)
+    era el costo de CPU dominante de un trial. Recortar ventanas de un
+    DataFrame pandas ya indexado por fecha es muchísimo más barato."""
+    if df.is_empty():
+        return pd.DataFrame(columns=df.columns)
+    pdf = df.to_pandas()
+    pdf = pdf.set_index("timestamp").sort_index()
+    return pdf
 
 
-async def _evaluar_ticker_dia_impl(
-    ticker: str, fecha: date, config: ScanConfig
+def _recortar_pandas(pdf: pd.DataFrame, inicio: date, fin: date) -> pd.DataFrame:
+    """Misma selección que history_cache.filter_range() (>= inicio, <= fin,
+    por fecha) pero sobre un DataFrame pandas ya indexado por tiempo —
+    resultado idéntico, solo más barato de recortar repetidamente.
+
+    No resetea el índice (a diferencia de una versión anterior): lo único
+    que consume este recorte hoy es calc_relvol/calc_avg_volume/calc_hv_rank
+    (vía _evaluar_dia_desde_cache), y ninguna de esas combina Series por
+    alineación de índice entre sí (operan sobre una sola columna, o hacen
+    `.shift()` que preserva el índice de origen) — a diferencia de
+    calc_atr_pct, que sí lo necesitaba y por eso ya no pasa por acá (ver
+    _serie_atr_pct, vectorizada aparte sobre la serie completa). Si algún
+    día se vuelve a rutear una función con ese patrón por este recorte, el
+    test de equivalencia lo va a agarrar (daría NaN, no un número
+    silenciosamente distinto)."""
+    if pdf.empty:
+        return pdf
+    return pdf.loc[pd.Timestamp(inicio) : pd.Timestamp(fin) + timedelta(days=1) - timedelta(microseconds=1)]
+
+
+def _valor_asof(serie: pd.Series, dia: date):
+    """Último valor de una serie ya indexada por fecha, en o antes de `dia`
+    (equivalente a "el valor de ayer" cuando `dia` = fin_contexto) — None si
+    todavía no hay ningún dato a esa altura (mismo caso que hoy devuelve
+    None por datos insuficientes)."""
+    if serie.empty:
+        return None
+    valor = serie.asof(pd.Timestamp(dia))
+    if valor is None or (isinstance(valor, float) and pd.isna(valor)):
+        return None
+    return valor
+
+
+def _serie_cruce_ema(pdf_full: pd.DataFrame, rapida: int, lenta: int) -> pd.Series:
+    """Serie completa de "EMA rápida > EMA lenta", calculada una sola vez
+    sobre todo el historial del ticker — reemplaza a detect_cruce_ema()
+    recalculado por día. Misma fórmula exacta que
+    indicators/trend.py::detect_cruce_ema (`close.ewm(span=X,
+    adjust=False).mean()`); un test de equivalencia (
+    test_runner_equivalencia_pandas.py) verifica que da lo mismo que el
+    camino viejo. Matemáticamente válido vectorizar: EMA converge (la
+    influencia del punto de partida decae exponencialmente) mucho antes de
+    los ~400 días de contexto que ya se usaban por día, así que el valor en
+    cualquier fecha es el mismo la calcule con todo el historial o con la
+    ventana acotada de siempre."""
+    if pdf_full.empty or "close" not in pdf_full.columns:
+        return pd.Series(dtype=object)
+    close = pdf_full["close"].astype(float)
+    fast = close.ewm(span=rapida, adjust=False).mean()
+    slow = close.ewm(span=lenta, adjust=False).mean()
+    cruce = (fast > slow).astype(object)
+    cruce.iloc[0] = None  # detect_cruce_ema exige len(close) >= 2
+    return cruce
+
+
+def _serie_sobre_ma(pdf_full: pd.DataFrame, periodo: int, use_ema: bool) -> pd.Series:
+    """Serie completa de "close > media móvil", una sola vez — misma
+    fórmula que indicators/trend.py::calc_ema/calc_sma. SMA
+    (`rolling(window=N)`) ya depende solo de las últimas N filas sea cual
+    sea el largo total pasado, así que vectorizar no cambia nada ahí; EMA
+    converge igual que en _serie_cruce_ema."""
+    if pdf_full.empty or "close" not in pdf_full.columns:
+        return pd.Series(dtype=object)
+    close = pdf_full["close"].astype(float)
+    ma = (
+        close.ewm(span=periodo, adjust=False).mean()
+        if use_ema
+        else close.rolling(window=periodo, min_periods=1).mean()
+    )
+    return close > ma
+
+
+def _serie_atr_pct(pdf_full: pd.DataFrame, periodo: int) -> pd.Series:
+    """Serie completa de ATR%, una sola vez — misma fórmula exacta que
+    indicators/volume.py::calc_atr/calc_atr_pct (True Range + EWM con
+    alpha=1/periodo). Converge igual que EMA por el mismo motivo."""
+    if pdf_full.empty:
+        return pd.Series(dtype=float)
+    for col in ("high", "low", "close"):
+        if col not in pdf_full.columns:
+            return pd.Series(dtype=float)
+    high = pdf_full["high"].astype(float)
+    low = pdf_full["low"].astype(float)
+    close = pdf_full["close"].astype(float)
+    prev_close = close.shift(1)
+    tr = pd.concat(
+        [high - low, (high - prev_close).abs(), (low - prev_close).abs()], axis=1
+    ).max(axis=1)
+    atr = tr.ewm(alpha=1.0 / periodo, adjust=False).mean().fillna(0.0)
+    atr_pct = (atr / close * 100.0).fillna(0.0)
+    return atr_pct
+
+
+def _evaluar_dia_desde_cache(
+    ticker: str,
+    fecha: date,
+    config: ScanConfig,
+    pdf_d_full: pd.DataFrame,
+    series_precalculadas: dict,
+    df_5m_full: pl.DataFrame,
 ) -> Optional[ResultadoDia]:
+    """Misma lógica de evaluación que antes (un día = un contexto terminado
+    el día anterior). Dos caminos distintos según el indicador:
+
+    - cruce_ema (4 timeframes), sobre_sma200/sobre_ema50 y atr_pct: se
+      calcularon UNA sola vez para todo el ticker en _evaluar_ticker_para_dias
+      (`series_precalculadas`, ver _serie_cruce_ema/_serie_sobre_ma/
+      _serie_atr_pct) — acá solo se busca el valor de "ayer" con
+      _valor_asof(). Matemáticamente idéntico a recalcular la ventana de
+      ~400 días por día (EMA/ATR convergen mucho antes de esa ventana, ver
+      test_runner_equivalencia_pandas.py), pero sin repetir el cálculo 933
+      veces.
+    - relvol, volumen_promedio y HV rank (IVR): siguen recortando la
+      ventana de "d" por día, sin cambios — HV rank en particular rankea
+      contra TODA la ventana que se le pase (no una ventana fija), así que
+      vectorizarlo cambiaría el resultado, no solo la velocidad."""
     fin_contexto = fecha - timedelta(days=1)
     inicio_contexto_d = fin_contexto - timedelta(days=int(config.velas_diarias * 1.6) + 10)
-    inicio_contexto_intraday = fin_contexto - timedelta(days=15)
 
-    try:
-        df_d, df_4h, df_15m, df_5m = await asyncio.gather(
-            history_cache.get_history(ticker, "d", inicio_contexto_d, fin_contexto),
-            history_cache.get_history(ticker, "4h", inicio_contexto_intraday, fin_contexto),
-            history_cache.get_history(ticker, "15m", inicio_contexto_intraday, fin_contexto),
-            history_cache.get_history(ticker, "5m", inicio_contexto_intraday, fin_contexto),
-        )
-    except Exception as exc:
-        console.log(f"[yellow]Backtest: sin historial de contexto para {ticker} {fecha}: {exc}[/yellow]")
+    df_d = _recortar_pandas(pdf_d_full, inicio_contexto_d, fin_contexto)
+    if df_d.empty or len(df_d) < 2:
         return None
 
-    if df_d.is_empty() or df_d.height < 2:
-        return None
-
-    precio_hoy = float(df_d["close"][-1])
-    precio_ayer = float(df_d["close"][-2])
+    precio_hoy = float(df_d["close"].iloc[-1])
+    precio_ayer = float(df_d["close"].iloc[-2])
     variacion_diaria_pct = (precio_hoy / precio_ayer - 1) * 100 if precio_ayer else 0.0
-    volumen_actual = int(df_d["volume"][-1])
+    volumen_actual = int(df_d["volume"].iloc[-1])
 
-    signals = detect_setup_timeframe(df_5m, df_15m, df_4h, df_d, config)
-    atr_pct = _calcular_atr_pct(df_d, config.atr_periodo)
+    signals = {
+        "cruce_ema_921_5m": _valor_asof(series_precalculadas["cruce_5m"], fin_contexto),
+        "cruce_ema_921_15m": _valor_asof(series_precalculadas["cruce_15m"], fin_contexto),
+        "cruce_ema_921_4h": _valor_asof(series_precalculadas["cruce_4h"], fin_contexto),
+        "cruce_ema_921_d": _valor_asof(series_precalculadas["cruce_d"], fin_contexto),
+        "sobre_sma200": _valor_asof(series_precalculadas["sobre_sma200"], fin_contexto),
+        "sobre_ema50": _valor_asof(series_precalculadas["sobre_ema50"], fin_contexto),
+    }
+    for clave in ("cruce_ema_921_5m", "cruce_ema_921_15m", "cruce_ema_921_4h", "cruce_ema_921_d", "sobre_sma200", "sobre_ema50"):
+        if signals[clave] is not None:
+            signals[clave] = bool(signals[clave])
+
+    atr_pct = _valor_asof(series_precalculadas["atr_pct"], fin_contexto)
+    if atr_pct is not None:
+        atr_pct = float(atr_pct) if atr_pct not in (None, 0.0) else None
     relvol = _calcular_relvol(df_d, config.relvol_periodo)
     volumen_promedio = _calcular_volumen_promedio(df_d, config.relvol_periodo)
     ivr = calc_hv_rank(df_d, config.hv_periodo)
@@ -139,19 +265,88 @@ async def _evaluar_ticker_dia_impl(
     simulacion = None
     if result.clasificacion in (Clasificacion.DAY, Clasificacion.SWING) and atr_pct:
         atr_valor = precio_hoy * atr_pct / 100.0
-        try:
-            velas_dia = await history_cache.get_history(ticker, "5m", fecha, fecha)
-        except Exception:
-            velas_dia = pl.DataFrame()
+        velas_dia = history_cache.filter_range(df_5m_full, fecha, fecha)
         if not velas_dia.is_empty():
             simulacion = simular(velas_dia, atr_valor, config)
 
     return result, simulacion
 
 
-async def _recolectar(tareas: list) -> list[ResultadoDia]:
-    """Lanza las tareas en paralelo, filtra excepciones y resultados None.
-    Compartido por recolectar_resultados() y recolectar_resultados_universo_real()."""
+async def _evaluar_ticker_para_dias(
+    ticker: str, dias: list[date], config: ScanConfig
+) -> list[ResultadoDia]:
+    """Evalúa un ticker en varios días cargando su historial de contexto una
+    sola vez (no una vez por día) — antes, cada día evaluado releía y
+    reconcataba los mismos Parquet del ticker desde disco, lo que sobre un
+    rango de años se vuelve un cuello de botella severo (ver comentario de
+    _SCHWAB_CONCURRENCY)."""
+    if not dias:
+        return []
+
+    dias_ordenados = sorted(dias)
+    fin_max = dias_ordenados[-1] - timedelta(days=1)
+    inicio_d = dias_ordenados[0] - timedelta(days=int(config.velas_diarias * 1.6) + 10)
+
+    # El intradía (4h/15m/5m) solo existe en Schwab desde ~nov-2025 (ver
+    # CLAUDE.md, "Precarga masiva del cache" — probado empíricamente, Schwab
+    # trunca en silencio cualquier pedido más viejo que eso). Acotar el
+    # pedido a ese piso evita disparar una llamada real a Schwab por cada
+    # ticker pidiendo años de intradía que nunca van a existir cuando el
+    # rango evaluado arranca antes de esa fecha (ej. universo curado desde
+    # 2023) — antes quedaba oculto porque Schwab respondía con datos
+    # truncados sin error; con eso el pedido simplemente no aporta nada útil.
+    piso_intraday = history_cache.FECHA_INICIO_DEFAULT["5m"]
+    inicio_intraday = max(dias_ordenados[0] - timedelta(days=15), piso_intraday)
+    hay_intraday = fin_max >= piso_intraday
+
+    async def _pedir_intraday(timeframe: str, fecha_fin: date) -> pl.DataFrame:
+        if not hay_intraday:
+            return pl.DataFrame()
+        return await history_cache.get_history(ticker, timeframe, inicio_intraday, fecha_fin)
+
+    async with _SCHWAB_CONCURRENCY:
+        try:
+            df_d_full, df_4h_full, df_15m_full, df_5m_full = await asyncio.gather(
+                history_cache.get_history(ticker, "d", inicio_d, fin_max),
+                _pedir_intraday("4h", fin_max),
+                _pedir_intraday("15m", fin_max),
+                _pedir_intraday("5m", dias_ordenados[-1]),
+            )
+        except Exception as exc:
+            console.log(f"[yellow]Backtest: sin historial de contexto para {ticker}: {exc}[/yellow]")
+            return []
+
+    pdf_d_full = _a_pandas_indexado(df_d_full)
+    pdf_4h_full = _a_pandas_indexado(df_4h_full)
+    pdf_15m_full = _a_pandas_indexado(df_15m_full)
+    pdf_5m_full = _a_pandas_indexado(df_5m_full)
+
+    # Calculadas UNA sola vez para todo el ticker (no una vez por día) —
+    # ver _evaluar_dia_desde_cache para el porqué de cuáles sí y cuáles no.
+    series_precalculadas = {
+        "cruce_5m": _serie_cruce_ema(pdf_5m_full, config.ema_rapida, config.ema_media),
+        "cruce_15m": _serie_cruce_ema(pdf_15m_full, config.ema_rapida, config.ema_media),
+        "cruce_4h": _serie_cruce_ema(pdf_4h_full, config.ema_rapida, config.ema_media),
+        "cruce_d": _serie_cruce_ema(pdf_d_full, config.ema_rapida, config.ema_media),
+        "sobre_sma200": _serie_sobre_ma(pdf_d_full, config.sma_tendencia, use_ema=False),
+        "sobre_ema50": _serie_sobre_ma(pdf_d_full, config.ema_lenta, use_ema=True),
+        "atr_pct": _serie_atr_pct(pdf_d_full, config.atr_periodo),
+    }
+
+    resultados: list[ResultadoDia] = []
+    for fecha in dias_ordenados:
+        resultado = _evaluar_dia_desde_cache(
+            ticker, fecha, config, pdf_d_full, series_precalculadas, df_5m_full,
+        )
+        if resultado is not None:
+            resultados.append(resultado)
+    return resultados
+
+
+async def _recolectar_por_ticker(tareas: list) -> list[ResultadoDia]:
+    """Lanza una tarea por ticker (cada una cubre todos sus días en memoria),
+    aplana los resultados y filtra excepciones. Compartido por
+    recolectar_resultados() y recolectar_resultados_universo_real()."""
     crudos = await asyncio.gather(*tareas, return_exceptions=True)
 
     resultados: list[ResultadoDia] = []
@@ -159,12 +354,12 @@ async def _recolectar(tareas: list) -> list[ResultadoDia]:
     for item in crudos:
         if isinstance(item, Exception):
             errores += 1
-        elif item is not None:
-            resultados.append(item)
+        else:
+            resultados.extend(item)
 
     console.log(
         f"[green]Backtest: {len(resultados)} evaluaciones"
-        + (f", {errores} errores" if errores else "")
+        + (f", {errores} tickers con error" if errores else "")
         + "[/green]"
     )
     return resultados
@@ -181,12 +376,8 @@ async def recolectar_resultados(
     console.log(
         f"[green]Backtest iniciado: {len(tickers)} tickers x {len(dias)} días hábiles[/green]"
     )
-    tareas = [
-        _evaluar_ticker_dia(ticker, fecha, config)
-        for fecha in dias
-        for ticker in tickers
-    ]
-    return await _recolectar(tareas)
+    tareas = [_evaluar_ticker_para_dias(ticker, dias, config) for ticker in tickers]
+    return await _recolectar_por_ticker(tareas)
 
 
 async def run_backtest(
@@ -240,15 +431,17 @@ async def recolectar_resultados_universo_real(
     un CSV guardado) con la config dada. Recibe `universo` ya calculado para
     que el optimizador lo compute una sola vez fuera del loop de trials
     (universo_real_csv() no depende de la config, solo de los CSV en disco)."""
+    por_ticker: dict[str, list[date]] = {}
+    for fecha, tickers in universo.items():
+        for ticker in tickers:
+            por_ticker.setdefault(ticker, []).append(fecha)
+
     console.log(
-        f"[green]Backtest universo real: {len(universo)} días con CSV guardado[/green]"
+        f"[green]Backtest universo real: {len(universo)} días con CSV guardado, "
+        f"{len(por_ticker)} tickers[/green]"
     )
-    tareas = [
-        _evaluar_ticker_dia(ticker, fecha, config)
-        for fecha, tickers in universo.items()
-        for ticker in tickers
-    ]
-    return await _recolectar(tareas)
+    tareas = [_evaluar_ticker_para_dias(ticker, dias, config) for ticker, dias in por_ticker.items()]
+    return await _recolectar_por_ticker(tareas)
 
 
 async def run_backtest_universo_real(config: ScanConfig, input_folder: Path) -> BacktestRun:

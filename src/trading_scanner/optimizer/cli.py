@@ -20,18 +20,17 @@ from pathlib import Path
 from typing import Optional
 
 import typer
-from rich.console import Console
 from rich.table import Table
 
 from ..config import settings
 from ..database import db
+from ..logging_setup import console
 from ..pipeline import get_active_config
 from .fitness import FitnessConfig
 from .study import construir_backtest_run_final, optimizar
 from .universo import universo_curado, universo_real
 
 app = typer.Typer()
-console = Console()
 
 
 def _parse_tickers(raw: str) -> list[str]:
@@ -68,8 +67,22 @@ def run(
     guardar: bool = typer.Option(
         False, "--guardar/--no-guardar", help="Guardar la config ganadora en Turso sin preguntar."
     ),
+    study_name: Optional[str] = typer.Option(
+        None,
+        help=(
+            "Nombre del study de Optuna a persistir en optimizer_state/optuna.db3. Si se pasa, "
+            "cada trial se guarda en SQLite a medida que corre y un run interrumpido (proceso "
+            "matado, corte de luz) se retoma exacto donde quedó volviendo a correr con el mismo "
+            "nombre — no reinicia desde el trial 0. Sin este flag, el run es in-memory como antes "
+            "(sin resume posible)."
+        ),
+    ),
 ) -> None:
     """Corre el optimizador de parámetros contra el universo real o curado."""
+    storage = None
+    if study_name:
+        settings.optimizer_state_path.mkdir(parents=True, exist_ok=True)
+        storage = f"sqlite:///{settings.optimizer_state_path / 'optuna.db3'}"
     if universo == "curado":
         if not tickers or not fecha_inicio or not fecha_fin:
             console.log(
@@ -91,7 +104,12 @@ def run(
     fitness_config = FitnessConfig(trades_objetivo=trades_objetivo)
 
     console.log(f"[green]Optimizador iniciado: {n_trials} trials, config base = {config_base.nombre}[/green]")
-    resultado = asyncio.run(optimizar(config_base, fuente, n_trials, fitness_config))
+    resultado = asyncio.run(
+        optimizar(
+            config_base, fuente, n_trials, fitness_config,
+            storage=storage, study_name=study_name,
+        )
+    )
 
     console.print(
         f"\n[bold green]Mejor trial: fitness={resultado.mejor_fitness:.4f} "

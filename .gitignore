@@ -4,6 +4,9 @@
 # Datos históricos cachados
 backtest_data/
 
+# Estado persistente del optimizador (Optuna SQLite)
+optimizer_state/
+
 # Documentación propietaria de Schwab (PDFs de referencia, no distribuir)
 docs/schwab-api/*.pdf
 
@@ -55,6 +58,7 @@ htmlcov/
 
 # Logs
 *.log
+logs/
 
 # Pycache en tests
 tests/__pycache__/

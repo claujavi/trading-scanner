@@ -25,14 +25,11 @@ from abc import ABC, abstractmethod
 from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
-from rich.console import Console
-
 from ..config import settings
+from ..logging_setup import console
 from .market_data_cache import MarketDataCache, Vela
 from .mock_schwab import _seed
 from .schwab_client import get_client
-
-console = Console()
 
 BACKOFF_BASE_S = 2.0
 BACKOFF_MAX_S = 60.0

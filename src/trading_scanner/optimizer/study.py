@@ -19,9 +19,9 @@ from typing import Callable, Optional
 
 import optuna
 from pydantic import ValidationError
-from rich.console import Console
 
 from ..backtest.metrics import EstrategiaMetrics, calcular_metricas, calcular_metricas_estrategia
+from ..logging_setup import console
 from ..models import BacktestRun, ScanConfig
 from .fitness import FitnessConfig, calcular_fitness
 from .search_space import sugerir_config
@@ -32,8 +32,6 @@ from .universo import FuenteUniverso
 # el progreso (ej. actualizar optimizer/state.py para que el frontend haga
 # polling). El CLI no lo usa — imprime su propio log por Rich dentro del loop.
 OnTrialCallback = Callable[[int, float, EstrategiaMetrics], None]
-
-console = Console()
 
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
@@ -53,11 +51,26 @@ async def optimizar(
     n_trials: int,
     fitness_config: FitnessConfig,
     on_trial: Optional[OnTrialCallback] = None,
+    storage: Optional[str] = None,
+    study_name: Optional[str] = None,
 ) -> OptimizerResultado:
-    study = optuna.create_study(direction="maximize")
-    n_validos = 0
+    """storage/study_name (opcionales): si se pasan, Optuna persiste cada
+    trial en SQLite a medida que se corre (no solo en memoria) — permite que
+    un run interrumpido (proceso matado, PC reiniciada, corte de luz) se
+    retome exactamente donde quedó, en vez de perder todo y arrancar desde
+    el trial 0. Sin ellos, el comportamiento es el de siempre (in-memory,
+    sin resume) — usado así por los tests existentes."""
+    study = optuna.create_study(
+        direction="maximize",
+        storage=storage,
+        study_name=study_name,
+        load_if_exists=True,
+    )
+    ya_hechos = len(study.trials)
+    if ya_hechos:
+        console.log(f"[cyan]Retomando study existente: {ya_hechos} trials ya completados[/cyan]")
 
-    for i in range(n_trials):
+    for i in range(ya_hechos, n_trials):
         trial = study.ask()
         try:
             config = sugerir_config(trial, config_base)
@@ -73,7 +86,6 @@ async def optimizar(
 
         trial.set_user_attr("metrics", metrics.__dict__)
         study.tell(trial, fitness)
-        n_validos += 1
 
         console.log(
             f"[cyan]Trial {i+1}/{n_trials}[/cyan] fitness={fitness:.4f} "
@@ -85,6 +97,9 @@ async def optimizar(
     mejor = study.best_trial
     mejor_config = sugerir_config(optuna.trial.FixedTrial(mejor.params), config_base)
     mejor_metrics = EstrategiaMetrics(**mejor.user_attrs["metrics"])
+    n_validos = sum(
+        1 for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE
+    )
 
     return OptimizerResultado(
         mejor_config=mejor_config,

@@ -17,20 +17,19 @@ from datetime import date, datetime
 from typing import Optional
 
 import polars as pl
-from rich.console import Console
 
 from .config import settings
 from .database import db
 from .engine.evaluator import DatosTickerCompletos, evaluar
 from .engine.signals import detect_setup_timeframe
 from .fetchers import calendar_client
+from .fetchers import history_cache
 from .fetchers import schwab_history as schwab_hist
 from .fetchers.market_data_cache import MarketDataCache
 from .fetchers.mock_schwab import generate_ohlcv, get_mock_ivr
 from .indicators.volume import calc_atr_pct, calc_avg_volume, calc_hv_rank, calc_relvol
+from .logging_setup import console
 from .models import FuenteDatos, ScanConfig, ScanResult, TickerBasico
-
-console = Console()
 
 
 async def get_active_config() -> ScanConfig:
@@ -90,7 +89,7 @@ def _calcular_ivr(ticker: str, df_d: pl.DataFrame, config: ScanConfig) -> Option
     """
     if settings.mock_schwab:
         return get_mock_ivr(ticker)
-    if df_d is None or df_d.is_empty():
+    if df_d is None or len(df_d) == 0:
         return None
     return calc_hv_rank(df_d, config.hv_periodo)
 
@@ -99,7 +98,7 @@ def _calcular_atr_pct(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
     """ATR% calculado sobre velas diarias de Schwab — no depende de que el
     CSV de ToS incluya esa columna, y es el mismo cálculo que usaría el
     backtester (que no tiene CSV en absoluto)."""
-    if df_d is None or df_d.is_empty():
+    if df_d is None or len(df_d) == 0:
         return None
     valores = calc_atr_pct(df_d, periodo).to_list()
     if not valores:
@@ -111,7 +110,7 @@ def _calcular_atr_pct(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
 def _calcular_relvol(df_d: pl.DataFrame, periodo: int) -> Optional[float]:
     """RelVol calculado sobre velas diarias de Schwab — mismo motivo que
     _calcular_atr_pct: el CSV no está disponible en backtesting."""
-    if df_d is None or df_d.is_empty():
+    if df_d is None or len(df_d) == 0:
         return None
     valor = calc_relvol(df_d, periodo)
     return valor if valor > 0 else None
@@ -121,9 +120,30 @@ def _calcular_volumen_promedio(df_d: pl.DataFrame, periodo: int) -> Optional[flo
     """Volumen promedio para el filtro de entrada volumen_promedio_min —
     mismo motivo que _calcular_atr_pct/_calcular_relvol: el CSV no siempre
     trae la columna Avg Volume."""
-    if df_d is None or df_d.is_empty():
+    if df_d is None or len(df_d) == 0:
         return None
     return calc_avg_volume(df_d, periodo)
+
+
+async def _actualizar_cache_historico(ticker: str) -> None:
+    """Mantiene backtest_data/ al día con lo que salió hoy en el scan en
+    vivo — sin esto, un ticker nuevo (o uno ya cacheado pero con el mes en
+    curso desactualizado) nunca se actualiza salvo que alguien vuelva a
+    correr cli_precarga.py a mano. Corre en paralelo por timeframe; se
+    resuelve sincrónicamente dentro de process_ticker (el trader acepta el
+    costo de unos segundos extra por ticker a cambio de no operar un
+    proceso aparte) pero nunca tumba el scan del día: cada falla se loguea
+    y se ignora, igual que _fetch_history."""
+    resultados = await asyncio.gather(
+        *(history_cache.actualizar_hasta_hoy(ticker, tf) for tf in history_cache.TIMEFRAMES),
+        return_exceptions=True,
+    )
+    for tf, resultado in zip(history_cache.TIMEFRAMES, resultados):
+        if isinstance(resultado, Exception):
+            console.log(
+                f"[yellow]No se pudo actualizar backtest_data/ de {ticker} {tf}: "
+                f"{resultado}[/yellow]"
+            )
 
 
 async def process_ticker(
@@ -182,6 +202,9 @@ async def process_ticker(
             f"[red]Error persistiendo {ticker} en Turso: "
             f"{type(exc).__name__}: {exc or 'sin detalle'}[/red]"
         )
+
+    if not settings.mock_schwab:
+        await _actualizar_cache_historico(ticker)
 
     if cache is not None:
         # Siembra el cache de streaming con los mismos DataFrames que ya

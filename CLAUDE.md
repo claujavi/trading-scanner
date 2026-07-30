@@ -1190,7 +1190,7 @@ pasando fechas históricas en lugar de "hoy".
 
 El evaluador es una función pura — es el componente más crítico y el más fácil de testear.
 
-**Cobertura real actual (99 tests, todos pasan, `not integration and not slow`):**
+**Cobertura real actual (102 tests, todos pasan, `not integration and not slow`):**
 ```
 tests/unit/test_csv_parser.py         → parseo CSV ToS, cascada de variación diaria, columnas faltantes
 tests/unit/test_evaluator.py          → clasificación DAY/SWING/empate/descarte, pesos, criterios incompletos
@@ -1220,6 +1220,10 @@ tests/unit/test_schwab_history_negativo.py → cache negativo de tickers_sin_his
 tests/unit/test_history_cache_introspeccion.py → tickers_cacheados()/rango_cacheado(): sin carpeta
                                          devuelve vacío/None, filtra por timeframe, calcula
                                          min/max entre varios tickers (incl. fin de mes en diciembre)
+tests/unit/test_history_cache_actualizar_hasta_hoy.py → actualizar_hasta_hoy(): ticker nuevo hace
+                                         backfill completo desde FECHA_INICIO_DEFAULT, ticker ya
+                                         conocido solo refresca el mes en curso (meses viejos
+                                         intactos), Schwab sin datos no rompe
 ```
 La cobertura de `evaluator.py` y `csv_parser.py` quedó repartida en `test_evaluator.py` y
 `test_csv_parser.py` en vez de los nombres originalmente planeados (`test_criteria.py`,
@@ -1385,6 +1389,35 @@ al período que sí tiene, sin avisar. Confirmado pidiendo explícitamente rango
   los 4 timeframes a la vez si se quiere ir más atrás en diario que en intradía — correrlo en dos
   invocaciones, una para `--timeframes d --fecha-inicio 2023-01-01` y otra para
   `--timeframes 4h,15m,5m --fecha-inicio 2025-11-01`.
+
+**Actualización diaria automática de `backtest_data/` — `pipeline.py::_actualizar_cache_historico()`
++ `history_cache.py::actualizar_hasta_hoy()`:**
+`cli_precarga.py` llena el cache una vez, pero no lo mantiene al día — un ticker nuevo que aparezca
+en el CSV de ToS un día cualquiera, o el mes en curso de uno ya conocido, quedaban desactualizados
+hasta que alguien corriera la precarga a mano de nuevo (un Parquet ya existente no garantiza que
+tenga la vela de hoy — `esta_cacheado()` solo confirma que el archivo existe). Para que esto no
+haga falta, `process_ticker()` llama a `_actualizar_cache_historico(ticker)` en **cada scan en
+vivo** (después de persistir el `ScanResult`, salteado por completo si `MOCK_SCHWAB=true` — no
+tiene sentido ensuciar `backtest_data/` con velas sintéticas), que a su vez llama a
+`history_cache.actualizar_hasta_hoy(ticker, timeframe)` para cada uno de los 4 timeframes en
+paralelo (`asyncio.gather`):
+- **Ticker nunca visto en ese timeframe** (la carpeta `backtest_data/{ticker}/{timeframe}/` no
+  existe): backfill completo desde `FECHA_INICIO_DEFAULT` (mismas fechas de corte que
+  `cli_precarga.py`: 2023-01-01 diario, 2025-11-01 intradía — ver arriba).
+- **Ticker ya conocido:** refresca **solo el mes en curso** (una sola llamada chica a Schwab, no
+  hay necesidad de re-descargar los meses ya cerrados) para incluir la vela de hoy, sobrescribiendo
+  ese Parquet con `_save_partitions()` (los meses anteriores no se tocan).
+
+Decidido explícitamente **síncrono** dentro de `process_ticker()` (no una tarea de background
+aparte): el CSV de ToS se sube minutos antes de la apertura, así que en el caso normal esta
+actualización ya termina antes de que arranque la rueda; en el peor caso, come unos minutos al
+principio de la sesión — aceptable a cambio de no operar un proceso separado. Nunca tumba el scan
+del día: cada falla (red, 429, ticker sin historial) se loguea con `console.log` en amarillo y se
+ignora, mismo criterio que ya usa `_fetch_history()` para el historial live. Duplica temporalmente
+las llamadas a Schwab por ticker durante el pre-market (las 4 de `_fetch_history()` para el scan en
+vivo + hasta 4 más para esta actualización), aceptable porque el volumen real es bajo (~5-30
+tickers típicos por día, ver "Contexto de negocio") y porque el refresco del mes en curso es liviano
+(no vuelve a pedir años de historial, solo semanas).
 
 ### Universo histórico
 

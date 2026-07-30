@@ -26,13 +26,12 @@ from datetime import date, timedelta
 from typing import Optional
 
 import typer
-from rich.console import Console
 
 from .fetchers import history_cache
 from .fetchers.schwab_history import SchwabRateLimitError
+from .logging_setup import console
 
 app = typer.Typer()
-console = Console()
 
 _TIMEFRAMES_DEFAULT = ["d", "4h", "15m", "5m"]
 

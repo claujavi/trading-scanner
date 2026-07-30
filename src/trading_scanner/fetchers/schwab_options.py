@@ -1,10 +1,7 @@
 from typing import Any, Dict, Iterable, Optional
 
-from rich.console import Console
-
+from ..logging_setup import console
 from .schwab_client import get_client
-
-console = Console()
 
 
 def _find_value(data: Any, keys: Iterable[str]) -> Optional[float]:

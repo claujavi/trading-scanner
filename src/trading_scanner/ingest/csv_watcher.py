@@ -6,13 +6,11 @@ from datetime import datetime
 from pathlib import Path
 from typing import Callable, Coroutine, Optional
 
-from rich.console import Console
 from watchdog.events import FileSystemEventHandler
 from watchdog.observers import Observer
 
+from ..logging_setup import console
 from .csv_parser import parse_csv
-
-console = Console()
 
 
 def wait_for_stable(path: Path, timeout_sec: int = 10) -> None:
