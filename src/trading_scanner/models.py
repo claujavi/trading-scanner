@@ -91,6 +91,15 @@ class ScanConfig(BaseModel):
     volumen_promedio_min: int = Field(500_000, ge=0)
     float_min: int = Field(10_000_000, ge=0)
     variacion_diaria_min_pct: float = Field(2.0, ge=0)
+    # El mínimo de variación diaria escala por precio: el mismo % representa
+    # un movimiento mucho más significativo en una acción cara que en una
+    # barata (ver docs/backlog_mejoras_clasificador.md, Prioridad 2 — curso
+    # Live Traders). variacion_diaria_min_pct aplica tal cual al precio de
+    # referencia; para otros precios se multiplica por
+    # (precio_referencia / precio), acotado a [escala_min, escala_max].
+    variacion_diaria_precio_referencia: float = Field(20.0, gt=0)
+    variacion_diaria_escala_min: float = Field(0.5, gt=0)
+    variacion_diaria_escala_max: float = Field(2.5, gt=0)
     relvol_min: float = Field(1.5, ge=0)
     atr_pct_min: float = Field(2.0, ge=0)
     spread_max_pct: float = Field(1.0, ge=0)  # spread bid/ask máximo aceptable, % del precio
@@ -104,6 +113,17 @@ class ScanConfig(BaseModel):
     atr_pct_umbral_swing_max: float = Field(3.0, gt=0)
     ivr_umbral_compra: float = Field(30.0, ge=0, le=100)  # criterio 6: IVR < X → señal day (opciones baratas)
     ivr_umbral_venta: float = Field(50.0, ge=0, le=100)   # criterio 6: IVR > X → señal swing (opciones caras)
+
+    # ── Estructura de pivotes (criterio 5, ver docs/spec_criterio_pivotes.md) ──
+    # Ventana del fractal: un pivote requiere ser el extremo estricto de
+    # pivote_ventana_l barras a cada lado.
+    pivote_ventana_l: int = Field(3, gt=0)
+    # Margen (en múltiplos de ATR14 diario) para que un pivote cuente como
+    # genuinamente mayor/menor al anterior, no ruido.
+    pivote_tolerancia_atr: float = Field(0.5, ge=0)
+    # Cuántos pivotes consecutivos (mínimo 2 = comparar el último contra el
+    # anteúltimo) hacen falta para confirmar HPH/HPL o LPH/LPL.
+    pivote_minimos_consecutivos: int = Field(2, ge=2)
 
     # ── Pesos de los 6 criterios objetivos ────────────────────────────────────
     # Valor 0.0 desactiva el criterio. Default 1.0 = peso igual para todos.
@@ -169,6 +189,8 @@ class ScanConfig(BaseModel):
     def _validar_rangos_relacionados(self) -> "ScanConfig":
         if self.precio_min >= self.precio_max:
             raise ValueError("precio_min debe ser menor que precio_max")
+        if self.variacion_diaria_escala_min >= self.variacion_diaria_escala_max:
+            raise ValueError("variacion_diaria_escala_min debe ser menor que variacion_diaria_escala_max")
         if self.relvol_umbral_swing_min >= self.relvol_umbral_swing_max:
             raise ValueError("relvol_umbral_swing_min debe ser menor que relvol_umbral_swing_max")
         if self.atr_pct_umbral_swing_min >= self.atr_pct_umbral_swing_max:
@@ -201,7 +223,7 @@ class ScanResult(BaseModel):
     # Versionado — permite detectar si un resultado antiguo es reproducible
     # con código nuevo. Incrementar evaluator_version en cada cambio de lógica.
     config_version: str = "1.0.0"  # SemVer del schema de ScanConfig
-    evaluator_version: str = "1.2.0"  # SemVer del código del evaluador
+    evaluator_version: str = "1.3.0"  # SemVer del código del evaluador
 
     # ── Contexto de mercado al momento del scan ──────────────────────────────
     # No afecta el score. Input para el optimizador en Fase 2.
@@ -219,7 +241,9 @@ class ScanResult(BaseModel):
     volumen_actual: int
 
     # ── Señales técnicas calculadas ──────────────────────────────────────────
-    sobre_sma200: Optional[bool] = None
+    sobre_sma200: Optional[bool] = None  # informativo — ya no alimenta el score (ver estructura_pivotes)
+    estructura_pivotes: Optional[str] = None  # "ALCISTA" | "BAJISTA" | None (criterio 5, ver spec)
+    ema200_diaria: Optional[float] = None  # referencia informativa, no entra al score
     sobre_ema50: Optional[bool] = None
     cruce_ema_921_5m: Optional[bool] = None  # True=alcista, False=bajista
     cruce_ema_921_15m: Optional[bool] = None

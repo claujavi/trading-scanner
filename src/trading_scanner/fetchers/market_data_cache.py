@@ -65,6 +65,8 @@ class TickerCache:
     atr_pct: Optional[float] = None
     ivr: Optional[float] = None
     sobre_sma200: Optional[bool] = None
+    estructura_pivotes: Optional[str] = None
+    ema200_diaria: Optional[float] = None
     sobre_ema50: Optional[bool] = None
     cruce_ema_921_15m: Optional[bool] = None
     cruce_ema_921_4h: Optional[bool] = None
@@ -201,6 +203,8 @@ class MarketDataCache:
             atr_pct=atr_pct,
             ivr=ivr,
             sobre_sma200=signals.get("sobre_sma200"),
+            estructura_pivotes=signals.get("estructura_pivotes"),
+            ema200_diaria=signals.get("ema200_diaria"),
             sobre_ema50=signals.get("sobre_ema50"),
             cruce_ema_921_15m=signals.get("cruce_ema_921_15m"),
             cruce_ema_921_4h=signals.get("cruce_ema_921_4h"),
@@ -319,6 +323,8 @@ class MarketDataCache:
             atr_pct=cache.atr_pct,
             volumen_actual=int(cache.volumen_acumulado),
             sobre_sma200=cache.sobre_sma200,
+            estructura_pivotes=cache.estructura_pivotes,
+            ema200_diaria=cache.ema200_diaria,
             sobre_ema50=cache.sobre_ema50,
             cruce_ema_921_5m=cache.cruce_ema_921_5m,
             cruce_ema_921_15m=cache.cruce_ema_921_15m,

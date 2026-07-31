@@ -26,7 +26,7 @@ class DatosTickerCompletos:
     relvol: Optional[float]
     atr_pct: Optional[float]
     volumen_actual: int
-    sobre_sma200: Optional[bool]
+    sobre_sma200: Optional[bool]  # informativo — ya no alimenta el score (ver estructura_pivotes)
     sobre_ema50: Optional[bool]
     cruce_ema_921_5m: Optional[bool]
     cruce_ema_921_15m: Optional[bool]
@@ -43,6 +43,8 @@ class DatosTickerCompletos:
     bid: Optional[float] = None
     ask: Optional[float] = None
     sin_historial_schwab: bool = False
+    estructura_pivotes: Optional[str] = None  # "ALCISTA" | "BAJISTA" | None — criterio 5
+    ema200_diaria: Optional[float] = None  # informativo, no entra al score
 
 
 _CRITERIO_NOMBRES = [
@@ -93,6 +95,8 @@ def _build_result(datos: DatosTickerCompletos, config: ScanConfig, **kwargs) -> 
         atr_pct=datos.atr_pct or 0.0,
         volumen_actual=datos.volumen_actual,
         sobre_sma200=datos.sobre_sma200,
+        estructura_pivotes=datos.estructura_pivotes,
+        ema200_diaria=datos.ema200_diaria,
         sobre_ema50=datos.sobre_ema50,
         cruce_ema_921_5m=datos.cruce_ema_921_5m,
         cruce_ema_921_15m=datos.cruce_ema_921_15m,
@@ -118,6 +122,19 @@ def _build_result(datos: DatosTickerCompletos, config: ScanConfig, **kwargs) -> 
     )
 
 
+def _umbral_variacion_diaria(precio: float, config: ScanConfig) -> float:
+    """Escala variacion_diaria_min_pct por precio: el mismo % de gap es un
+    movimiento más significativo en una acción cara que en una barata (ver
+    docs/backlog_mejoras_clasificador.md, Prioridad 2). A precio ==
+    variacion_diaria_precio_referencia, devuelve el umbral tal cual
+    (comportamiento idéntico al de antes de este cambio)."""
+    if precio <= 0:
+        return config.variacion_diaria_min_pct
+    factor = config.variacion_diaria_precio_referencia / precio
+    factor = max(config.variacion_diaria_escala_min, min(config.variacion_diaria_escala_max, factor))
+    return config.variacion_diaria_min_pct * factor
+
+
 def _validar_filtros_entrada(datos: DatosTickerCompletos, config: ScanConfig) -> list[str]:
     """Filtros de entrada (ScanConfig): validan que el ticker sea
     mínimamente operable antes de gastar los 7 criterios en él.
@@ -131,7 +148,7 @@ def _validar_filtros_entrada(datos: DatosTickerCompletos, config: ScanConfig) ->
     if not (config.precio_min <= datos.precio <= config.precio_max):
         violaciones.append("precio")
 
-    if abs(datos.variacion_diaria_pct) < config.variacion_diaria_min_pct:
+    if abs(datos.variacion_diaria_pct) < _umbral_variacion_diaria(datos.precio, config):
         violaciones.append("variacion_diaria")
 
     if datos.atr_pct is not None and datos.atr_pct < config.atr_pct_min:
@@ -175,7 +192,7 @@ def evaluar(datos: DatosTickerCompletos, config: ScanConfig) -> ScanResult:
         criterio_catalizador(datos.catalizador_detectado, datos.warning_calendar),
         criterio_relvol(datos.relvol, config),
         criterio_atr_pct(datos.atr_pct, config),
-        criterio_sma200(datos.sobre_sma200),
+        criterio_sma200(datos.estructura_pivotes),
         criterio_ivr(datos.ivr, config),
     ]
 
@@ -245,7 +262,7 @@ def desglosar_criterios(result: ScanResult) -> list[dict]:
         criterio_catalizador(result.catalizador_detectado, result.warning_calendar),
         criterio_relvol(result.relvol, config),
         criterio_atr_pct(result.atr_pct, config),
-        criterio_sma200(result.sobre_sma200),
+        criterio_sma200(result.estructura_pivotes),
         criterio_ivr(result.ivr, config),
     ]
 

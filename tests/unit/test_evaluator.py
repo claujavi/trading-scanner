@@ -17,7 +17,8 @@ def make_base_data(**overrides) -> DatosTickerCompletos:
         "relvol": 3.5,
         "atr_pct": 4.0,
         "volumen_actual": 1_200_000,
-        "sobre_sma200": True,
+        "sobre_sma200": True,  # informativo — ya no alimenta el score
+        "estructura_pivotes": "ALCISTA",
         "sobre_ema50": True,
         "cruce_ema_921_5m": True,
         "cruce_ema_921_15m": True,
@@ -57,7 +58,7 @@ def test_evaluador_classifica_swing_con_setup_bearish_y_relvol_moderado():
         cruce_ema_921_d=False,
         relvol=2.0,
         atr_pct=2.0,
-        sobre_sma200=False,
+        estructura_pivotes="BAJISTA",
         ivr=60.0,
     )
 
@@ -86,7 +87,7 @@ def test_evaluador_empate_favorece_day_por_capital_limitado():
         warning_calendar="GREEN",
         relvol=3.5,  # zona day
         atr_pct=2.0,  # zona swing, cumple igual el filtro de entrada atr_pct_min
-        sobre_sma200=True,  # day
+        estructura_pivotes="ALCISTA",  # day
         ivr=55.0,  # zona swing
     )
 
@@ -103,6 +104,7 @@ def test_evaluador_descarta_por_insuficiente_data():
         relvol=None,
         atr_pct=None,
         sobre_sma200=None,
+        estructura_pivotes=None,
         ivr=None,
         catalizador_detectado=False,
         warning_calendar=None,
@@ -162,6 +164,7 @@ def test_sin_historial_schwab_agrega_tag_y_termina_en_descartar():
         relvol=None,
         atr_pct=None,
         sobre_sma200=None,
+        estructura_pivotes=None,
         cruce_ema_921_5m=None,
         cruce_ema_921_15m=None,
         cruce_ema_921_4h=None,

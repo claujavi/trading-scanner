@@ -61,10 +61,16 @@ def criterio_atr_pct(atr_pct: Optional[float], config: ScanConfig) -> Optional[T
     return 0.0, 0.0
 
 
-def criterio_sma200(sobre_sma200: Optional[bool]) -> Optional[Tuple[float, float]]:
-    if sobre_sma200 is None:
-        return None
-    return (1.0, 0.0) if sobre_sma200 else (0.0, 1.0)
+def criterio_sma200(estructura_pivotes: Optional[str]) -> Optional[Tuple[float, float]]:
+    """Estructura de tendencia por pivotes (HPH/HPL vs LPH/LPL) — ver
+    engine/pivots.py y docs/spec_criterio_pivotes.md. None (mixta o datos
+    insuficientes) es un criterio no calculable, no hace fallback a ningún
+    bit binario (Regla 2: no penaliza, simplemente no participa del score)."""
+    if estructura_pivotes == "ALCISTA":
+        return 1.0, 0.0
+    if estructura_pivotes == "BAJISTA":
+        return 0.0, 1.0
+    return None
 
 
 def criterio_ivr(ivr: Optional[float], config: ScanConfig) -> Optional[Tuple[float, float]]:

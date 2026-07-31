@@ -101,13 +101,24 @@ class TursoClient:
             return results
 
     async def initialize_schema(self) -> None:
-        """Crea las tablas si no existen."""
+        """Crea las tablas si no existen. Las ALTER TABLE de acá abajo son
+        para tablas `scan_results` que ya existían antes de agregar
+        estructura_pivotes/ema200_diaria (Prioridad 1 del clasificador,
+        ver docs/spec_criterio_pivotes.md) — CREATE TABLE IF NOT EXISTS no
+        agrega columnas a una tabla ya creada. No hay sistema de migraciones
+        en este proyecto: cada ALTER falla en silencio si la columna ya
+        existe (Turso devuelve un resultado de tipo "error" para ese
+        statement puntual del batch, sin abortar el resto ni propagar
+        excepción — mismo criterio de tolerancia a fallos que ya usa el
+        resto del sistema)."""
         statements = [
             (self.DDL_SCAN_RESULTS, None),
             (self.DDL_SCAN_CONFIGS, None),
             (self.DDL_BACKTEST_RUNS, None),
             (self.DDL_HISTORY_CACHE_META, None),
             (self.DDL_TICKERS_SIN_HISTORIAL, None),
+            ("ALTER TABLE scan_results ADD COLUMN estructura_pivotes TEXT", None),
+            ("ALTER TABLE scan_results ADD COLUMN ema200_diaria REAL", None),
         ]
         await self._batch(statements)
 
@@ -123,7 +134,8 @@ class TursoClient:
             config_version, evaluator_version, vix_apertura,
             spy_sobre_sma200, futuros_es_gap_pct, calendar_disponible,
             precio, variacion_diaria_pct, relvol, atr_pct, volumen_actual,
-            sobre_sma200, sobre_ema50, cruce_ema_921_5m, cruce_ema_921_15m,
+            sobre_sma200, estructura_pivotes, ema200_diaria, sobre_ema50,
+            cruce_ema_921_5m, cruce_ema_921_15m,
             cruce_ema_921_4h, cruce_ema_921_d, rsi_14_5m, rsi_14_d,
             macd_cruce_alcista_15m, macd_cruce_alcista_d, ivr,
             ivr_señal_day, ivr_señal_swing, warning_calendar, earnings_24h,
@@ -134,7 +146,7 @@ class TursoClient:
         ) VALUES (
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
             ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?,
-            ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?
         )
         """
         params = [
@@ -155,6 +167,8 @@ class TursoClient:
             result.atr_pct,
             result.volumen_actual,
             result.sobre_sma200,
+            result.estructura_pivotes,
+            result.ema200_diaria,
             result.sobre_ema50,
             result.cruce_ema_921_5m,
             result.cruce_ema_921_15m,
@@ -390,6 +404,8 @@ class TursoClient:
         atr_pct REAL NOT NULL,
         volumen_actual INTEGER NOT NULL,
         sobre_sma200 BOOLEAN,
+        estructura_pivotes TEXT,
+        ema200_diaria REAL,
         sobre_ema50 BOOLEAN,
         cruce_ema_921_5m BOOLEAN,
         cruce_ema_921_15m BOOLEAN,

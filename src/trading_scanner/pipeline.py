@@ -174,6 +174,8 @@ async def process_ticker(
         atr_pct=atr_pct,
         volumen_actual=ticker_data.volumen_actual,
         sobre_sma200=signals.get("sobre_sma200"),
+        estructura_pivotes=signals.get("estructura_pivotes"),
+        ema200_diaria=signals.get("ema200_diaria"),
         sobre_ema50=signals.get("sobre_ema50"),
         cruce_ema_921_5m=signals.get("cruce_ema_921_5m"),
         cruce_ema_921_15m=signals.get("cruce_ema_921_15m"),

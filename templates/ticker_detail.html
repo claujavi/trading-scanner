@@ -92,7 +92,9 @@
         <tr><td style="color:var(--text-muted);padding-right:16px;">RelVol</td><td class="mono">{{ result.relvol }}</td></tr>
         <tr><td style="color:var(--text-muted);padding-right:16px;">ATR%</td><td class="mono">{{ "%.2f"|format(result.atr_pct) }}</td></tr>
         <tr><td style="color:var(--text-muted);padding-right:16px;">IVR (HV Rank)</td><td class="mono">{{ result.ivr if result.ivr is not none else "—" }}</td></tr>
-        <tr><td style="color:var(--text-muted);padding-right:16px;">Sobre SMA200</td><td>{{ result.sobre_sma200 if result.sobre_sma200 is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Estructura de pivotes (criterio 5)</td><td>{{ result.estructura_pivotes or "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">Sobre SMA200 (informativo)</td><td>{{ result.sobre_sma200 if result.sobre_sma200 is not none else "—" }}</td></tr>
+        <tr><td style="color:var(--text-muted);padding-right:16px;">EMA200 diaria (informativo)</td><td class="mono">{{ "%.2f"|format(result.ema200_diaria) if result.ema200_diaria is not none else "—" }}</td></tr>
         <tr><td style="color:var(--text-muted);padding-right:16px;">Sobre EMA50</td><td>{{ result.sobre_ema50 if result.sobre_ema50 is not none else "—" }}</td></tr>
         <tr><td style="color:var(--text-muted);padding-right:16px;">Cruce EMA 9/21 (5m)</td><td>{{ result.cruce_ema_921_5m if result.cruce_ema_921_5m is not none else "—" }}</td></tr>
         <tr><td style="color:var(--text-muted);padding-right:16px;">Cruce EMA 9/21 (15m)</td><td>{{ result.cruce_ema_921_15m if result.cruce_ema_921_15m is not none else "—" }}</td></tr>
