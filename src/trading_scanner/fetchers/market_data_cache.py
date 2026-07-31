@@ -28,8 +28,10 @@ from typing import Optional
 import polars as pl
 
 from ..engine.evaluator import DatosTickerCompletos
+from ..engine.pattern_3bp import Detector3BP, EventoPatron3BP, VelaPattern
 from ..fetchers.calendar_client import CalendarWarning
 from ..indicators.trend import detect_cruce_ema
+from ..indicators.volume import calc_atr
 from ..models import FuenteDatos, ScanConfig, TickerBasico
 
 _EMPTY_DF = pl.DataFrame(schema={
@@ -92,6 +94,17 @@ class TickerCache:
     # que se van cerrando durante la sesión
     velas_hoy: list[Vela] = field(default_factory=list)
 
+    # ── Módulo 3BP/4BP (docs/spec_modulo_3bp_4bp.md) — señal paralela ───────
+    # Series propias, deliberadamente SIN sembrar con contexto histórico
+    # (a diferencia de velas_hoy) — el patrón solo debe considerar velas de
+    # la sesión en vivo de hoy, no días previos.
+    velas_3bp_5m: list[Vela] = field(default_factory=list)
+    velas_3bp_15m: list[Vela] = field(default_factory=list)
+    detector_3bp_5m: Optional[Detector3BP] = None
+    detector_3bp_15m: Optional[Detector3BP] = None
+    ultimo_evento_3bp_5m: Optional[EventoPatron3BP] = None
+    ultimo_evento_3bp_15m: Optional[EventoPatron3BP] = None
+
     # ── Última evaluación disparada por un evento significativo ─────────────
     ultimo_score_day: float = 0.0
     ultimo_score_swing: float = 0.0
@@ -134,6 +147,73 @@ def _velas_a_df(velas: list[Vela]) -> pl.DataFrame:
 def _floor_5min(ts: datetime) -> datetime:
     minuto = (ts.minute // 5) * 5
     return ts.replace(minute=minuto, second=0, microsecond=0)
+
+
+def _floor_15min(ts: datetime) -> datetime:
+    minuto = (ts.minute // 15) * 15
+    return ts.replace(minute=minuto, second=0, microsecond=0)
+
+
+def _actualizar_bucket(velas: list[Vela], vela_1m: Vela, floor_fn) -> tuple[bool, Optional[Vela]]:
+    """Agrega `vela_1m` al bucket correspondiente — mergea si sigue dentro
+    de la misma ventana, abre uno nuevo si no. Devuelve (se_cerró_un_bucket,
+    vela_recién_cerrada). Lógica compartida entre el bucketeo de 5m (ya
+    existente) y el de 3BP/4BP (5m y 15m, series independientes)."""
+    bucket_ts = floor_fn(vela_1m.timestamp)
+    ultima = velas[-1] if velas else None
+
+    if ultima is not None and ultima.timestamp == bucket_ts:
+        ultima.high = max(ultima.high, vela_1m.high)
+        ultima.low = min(ultima.low, vela_1m.low)
+        ultima.close = vela_1m.close
+        ultima.volume += vela_1m.volume
+        return False, None
+
+    vela_cerro = ultima is not None
+    velas.append(Vela(
+        timestamp=bucket_ts,
+        open=vela_1m.open,
+        high=vela_1m.high,
+        low=vela_1m.low,
+        close=vela_1m.close,
+        volume=vela_1m.volume,
+    ))
+    return vela_cerro, (ultima if vela_cerro else None)
+
+
+def _a_vela_pattern(vela: Vela) -> VelaPattern:
+    return VelaPattern(timestamp=vela.timestamp, high=vela.high, low=vela.low, close=vela.close, volume=vela.volume)
+
+
+def _atr14_de_velas(velas: list[Vela]) -> Optional[float]:
+    if len(velas) < 2:
+        return None
+    valores = calc_atr(_velas_a_df(velas), periodo=14).to_list()
+    if not valores or valores[-1] is None:
+        return None
+    return float(valores[-1])
+
+
+def _volumen_promedio_de_velas(velas: list[Vela]) -> Optional[float]:
+    """Promedio de volumen de las velas ya cerradas ANTES de la última de
+    la lista (que es la recién cerrada que se está evaluando) — referencia
+    de "volumen normal" para el tier de confirmación de 3BP, en la misma
+    escala de timeframe (no el volumen promedio diario que ya usa el
+    clasificador de 6 criterios)."""
+    anteriores = velas[:-1]
+    if len(anteriores) < 2:
+        return None
+    return sum(v.volume for v in anteriores) / len(anteriores)
+
+
+def _crear_detector_3bp(config: ScanConfig, timeframe: str) -> Detector3BP:
+    return Detector3BP(
+        wrb_multiplicador=getattr(config, f"bp34_wrb_multiplicador_{timeframe}"),
+        tolerancia_pct=getattr(config, f"bp34_tolerancia_pct_{timeframe}"),
+        n_invalidacion=getattr(config, f"bp34_n_invalidacion_{timeframe}"),
+        ventana_inicio_barras=getattr(config, f"bp34_ventana_inicio_barras_{timeframe}"),
+        volumen_confirmado_mult=config.bp34_volumen_confirmado_mult,
+    )
 
 
 def _categoria_relvol(relvol: Optional[float], config: ScanConfig) -> Optional[str]:
@@ -219,6 +299,8 @@ class MarketDataCache:
         )
         cache.velas_hoy = _df_a_velas(df_5m)
         cache.relvol_categoria = _categoria_relvol(self._relvol_actual(cache), self._config)
+        cache.detector_3bp_5m = _crear_detector_3bp(self._config, "5m")
+        cache.detector_3bp_15m = _crear_detector_3bp(self._config, "15m")
         self._tickers[ticker] = cache
 
     def actualizar_tick(
@@ -272,39 +354,55 @@ class MarketDataCache:
         if cache is None:
             return False
 
-        bucket_ts = _floor_5min(vela_1m.timestamp)
-        ultima = cache.velas_hoy[-1] if cache.velas_hoy else None
+        vela_cerro, vela_cerrada = _actualizar_bucket(cache.velas_hoy, vela_1m, _floor_5min)
 
-        if ultima is not None and ultima.timestamp == bucket_ts:
-            ultima.high = max(ultima.high, vela_1m.high)
-            ultima.low = min(ultima.low, vela_1m.low)
-            ultima.close = vela_1m.close
-            ultima.volume += vela_1m.volume
-            return False  # sigue dentro de la misma ventana de 5m — no cerró
+        evento = False
+        if vela_cerro and vela_cerrada is not None:
+            df_5m = _velas_a_df(cache.velas_hoy)
+            cruce_actual = detect_cruce_ema(df_5m, self._config.ema_rapida, self._config.ema_media)
+            cruce_previo = cache.cruce_ema_921_5m
+            evento = (
+                cruce_previo is not None
+                and cruce_actual is not None
+                and cruce_actual != cruce_previo
+            )
+            cache.cruce_ema_921_5m = cruce_actual
 
-        vela_cerro = ultima is not None
-        cache.velas_hoy.append(Vela(
-            timestamp=bucket_ts,
-            open=vela_1m.open,
-            high=vela_1m.high,
-            low=vela_1m.low,
-            close=vela_1m.close,
-            volume=vela_1m.volume,
-        ))
+        # Módulo 3BP/4BP — señal paralela, bucketeo independiente (ver
+        # comentario de velas_3bp_5m/_15m en TickerCache). No afecta el
+        # `evento` de arriba: no dispara la reevaluación del clasificador
+        # de 6 criterios (spec: "no se cruza con la clasificación DAY/SWING").
+        self._procesar_3bp(cache, "5m", vela_1m)
+        self._procesar_3bp(cache, "15m", vela_1m)
 
-        if not vela_cerro:
-            return False  # primerísima vela del día, nada contra qué comparar
-
-        df_5m = _velas_a_df(cache.velas_hoy)
-        cruce_actual = detect_cruce_ema(df_5m, self._config.ema_rapida, self._config.ema_media)
-        cruce_previo = cache.cruce_ema_921_5m
-        evento = (
-            cruce_previo is not None
-            and cruce_actual is not None
-            and cruce_actual != cruce_previo
-        )
-        cache.cruce_ema_921_5m = cruce_actual
         return evento
+
+    def _procesar_3bp(self, cache: TickerCache, timeframe: str, vela_1m: Vela) -> None:
+        if timeframe == "5m":
+            serie, detector, floor_fn = cache.velas_3bp_5m, cache.detector_3bp_5m, _floor_5min
+        else:
+            serie, detector, floor_fn = cache.velas_3bp_15m, cache.detector_3bp_15m, _floor_15min
+
+        if detector is None:
+            return
+
+        cerro, vela_cerrada = _actualizar_bucket(serie, vela_1m, floor_fn)
+        if not cerro or vela_cerrada is None:
+            return
+
+        # `serie` en este punto = [...cerradas..., vela_cerrada, nueva_parcial]
+        contexto = serie[:-1]  # todas las cerradas, incluida la recién cerrada
+        atr14 = _atr14_de_velas(contexto)
+        if atr14 is None:
+            return  # todavía no hay suficiente contexto de sesión — no evalúa
+        volumen_promedio = _volumen_promedio_de_velas(contexto)
+
+        evento = detector.procesar_barra(_a_vela_pattern(vela_cerrada), atr14, volumen_promedio)
+        if evento is not None:
+            if timeframe == "5m":
+                cache.ultimo_evento_3bp_5m = evento
+            else:
+                cache.ultimo_evento_3bp_15m = evento
 
     def snapshot(self, ticker: str) -> Optional[DatosTickerCompletos]:
         cache = self._tickers.get(ticker)

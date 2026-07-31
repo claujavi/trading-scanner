@@ -229,6 +229,13 @@ walker) en "Orden de trabajo acordado", no dejado como nota suelta acá.
 - Variantes bajistas -3BP/-4BP.
 - Cola de detección en daily/weekly (versión swing del mismo patrón) — queda anotada para
   evaluar más adelante, no se define universo ni cadencia todavía.
+- **Detección de 3BP en pre-market, unificada con Super Curl como trabajo futuro relacionado —
+  no son dos pendientes aislados, es la misma razón de fondo.** Las series de 3BP (`velas_3bp_5m`/
+  `_15m`, paso 3) arrancan vacías cada día a propósito, sin heredar contexto de pre-market — ver
+  el punto ciego concreto documentado en el paso 3 de "Orden de trabajo acordado" (sin señales
+  posibles en los primeros 15-45 min de sesión). Cualquier futuro soporte de pre-market para 3BP
+  debería diseñarse junto con Super Curl (que por definición **es** un patrón de pre-market: gap +
+  consolidación + breakout), no por separado.
 - Super Curl (gap + pullback + breakout) — sumar de forma incremental después de validar 3BP.
 - Reconciliar la definición de `PARTIAL_SCALE` (salida parcial en 1R fijo vs. primera resistencia
   técnica — hoy los documentos del sistema no coinciden entre sí). No bloquea esta fase porque el
@@ -325,8 +332,39 @@ por-timeframe o compartido, en el punto 2 de "Orden de trabajo acordado".
    por-timeframe (`bp34_ventana_inicio_barras_5m` / `_15m`) porque 4 barras representan
    contextos de mercado muy distintos según el timeframe (~15-25 min en 5m contra ~45-75 min en
    15m) — no tiene sentido calificar "inicio de movimiento" con la misma vara en los dos.
-3. **Wireo en vivo** — expandir `market_data_cache.py` para bucketear **dos** series en paralelo
-   (5m y 15m) en vez de solo 5m como hoy, y correr el detector sobre cada una.
+3. **Wireo en vivo ✅ hecho** — `market_data_cache.py`: `TickerCache` suma `velas_3bp_5m` /
+   `velas_3bp_15m` (bucketeo de 1m→5m y 1m→15m en paralelo, vía `_actualizar_bucket()`
+   compartida — refactor de la lógica de bucketeo que antes solo existía para 5m) +
+   `detector_3bp_5m` / `detector_3bp_15m` (instanciados en `seed()` con los parámetros de
+   `ScanConfig` del timeframe correspondiente) + `ultimo_evento_3bp_5m` / `_15m`.
+   `actualizar_vela_1m()` alimenta ambos detectores en cada tick, sin afectar el `evento`
+   booleano que dispara la reevaluación del clasificador de 6 criterios (independiente, como
+   pide la spec). ATR14 y volumen promedio de referencia se calculan sobre la propia serie de
+   3BP (mismo timeframe), no sobre el ATR%/volumen diario que ya usa el clasificador.
+
+   **Decisión de diseño tomada durante la implementación, confirmada:** `velas_3bp_5m`/`_15m`
+   son series **propias**, deliberadamente sin sembrar con el contexto histórico de pre-market
+   (a diferencia de `velas_hoy`, que sí se siembra desde `df_5m` para que la EMA del clasificador
+   tenga continuidad). Motivo: `velas_hoy`/`df_15m` ya traen ~1-5 días de historial al sembrarse,
+   y dejar que el patrón 3BP arrancara con esa ventana le daría contexto de días previos a la
+   sesión de hoy — no encaja con el encuadre "en tiempo real... para el universo de candidatos
+   del día" de la spec. Consistente con haber dejado el análisis de patrones de pre-market
+   (Super Curl / gap rating) explícitamente fuera de alcance — ver referencia cruzada en "Fuera
+   de alcance" más abajo.
+
+   **Punto ciego concreto que genera esta decisión — documentado ahora, no como sorpresa cuando
+   se evalúen los resultados del modo shadow más adelante:** recién a partir de la 3ra vela
+   cerrada del día (2 velas de contexto + la evaluada) el detector empieza a recibir barras —
+   antes de eso, `_atr14_de_velas()` no tiene suficiente contexto y se salta la evaluación. En
+   números: **sin señales posibles en los primeros 15 minutos de sesión en 5m** (3 velas × 5 min)
+   **ni en los primeros 45 minutos en 15m** (3 velas × 15 min) — justo la ventana que el curso
+   señala como el mejor caso de uso de 3BP ("momentum de la mañana temprano", ver `Resumen Live
+   Traders...md`, Parte 10). Si se prefiere sembrar con historial como el resto del sistema (y
+   así cerrar este punto ciego), es un cambio acotado a `seed()`.
+
+   4 tests nuevos en `tests/unit/test_market_data_cache_3bp.py` (series separadas del historial,
+   detectores instanciados con la config correcta, bucketeo 5m/15m en paralelo sin interferirse,
+   y detección real de una barra 1 WRB a través del wireo completo).
 4. **Backtest walker nuevo** — basado en el patrón de `backtest/simulator.py` (que ya camina vela
    por vela), no en `backtest/runner.py` (que evalúa "un día = un contexto" con lookups `asof`,
    forma incompatible con una máquina de estados intradía).
