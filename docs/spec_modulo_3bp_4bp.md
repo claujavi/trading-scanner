@@ -368,8 +368,64 @@ por-timeframe o compartido, en el punto 2 de "Orden de trabajo acordado".
 4. **Backtest walker nuevo** — basado en el patrón de `backtest/simulator.py` (que ya camina vela
    por vela), no en `backtest/runner.py` (que evalúa "un día = un contexto" con lookups `asof`,
    forma incompatible con una máquina de estados intradía).
-   **Checkpoint obligatorio antes de escribir el walker** (ver hallazgo en sección 7): confirmar
-   que los límites de día usados coinciden con el día de trading NY real, no con el corte UTC de
-   `filter_range()` — si no coinciden, la lógica de invalidación por N barras y la evaluación día
-   por día pueden estar caminando sobre límites de día incorrectos. No arrancar el walker sin
-   resolver esto primero.
+
+   **Checkpoint obligatorio antes de escribir el walker ✅ resuelto.**
+
+   **1. Confirmado con datos reales (no solo inspección de código):** pedir `fecha=2026-01-15`
+   contra `backtest_data/AAL/5m/2026/01.parquet` devolvía velas desde **2026-01-14 19:00 NY hasta
+   2026-01-15 18:50 NY** — mezclando dos días de trading. Peor todavía: la vela de **entrada** de
+   la simulación (`velas_dia["open"][0]`) resultaba ser la de la tarde/noche del día anterior
+   (2026-01-14 19:00 NY, open=15.08), no la apertura real del día pedido (2026-01-15 9:30 NY,
+   open=15.24) — 70 de 168 velas (42%) del "día" simulado eran de la sesión equivocada. Esto
+   contaminaba entrada, stop, target y cierre EOD de cada trade simulado, no solo el cierre (que
+   ya se había mitigado en el punto 7).
+
+   **2. Mapeo de impacto, antes de tocar nada:**
+
+   | Dónde | Timeframe | ¿Afectado en la práctica? |
+   |---|---|---|
+   | `runner.py:268` → `velas_dia` → `simular()` | 5m | **Sí, gravemente** |
+   | `history_cache.get_history()` internamente | cualquiera | Solo en rangos anchos (años) — corrimiento de ~5h en los bordes, despreciable |
+   | `runner.py:207` → `_recortar_pandas(pdf_d_full, ...)` | diario | No, por casualidad — las velas diarias de Schwab están a las 05:00 UTC, que cae en la misma fecha calendario NY tanto en EST como en EDT. Coincidencia frágil, no una garantía de diseño. |
+
+   El motor de clasificación (score, DAY/SWING/DESCARTAR) usa velas diarias — no afectado por
+   este hallazgo puntual. El **resultado de cada trade simulado** en
+   `docs/resumen_optimizador_2026-07.md` (win rate 71.4%, profit factor 9.06, expectancy 0.476R,
+   max drawdown 0.41R, 7 trades) sí viene de `simular()` alimentado con `velas_dia` — **esos
+   números muy probablemente cambian** al corregir esto. **`docs/resumen_optimizador_2026-07.md`
+   queda pendiente de una nota de advertencia explícita** marcándolos como no confiables hasta
+   una re-corrida — no se agregó todavía porque es una decisión pendiente de discusión aparte
+   (ver hallazgo #2 más abajo, que también afecta esos mismos números y conviene resolver antes
+   de decidir si re-correr una vez o dos).
+
+   **3. Fix aplicado:** `history_cache.py::filter_range()` ahora convierte a hora NY antes de
+   extraer la fecha (los timestamps de Schwab son naive-pero-UTC, nunca hora NY — mismo patrón ya
+   usado en `simulator.py::_truncar_a_cierre_forzado`). 8 tests nuevos en
+   `tests/unit/test_history_cache_filter_range.py`, incluyendo los dos casos límite de cambio de
+   horario (transición a EDT en marzo 2026 y a EST en noviembre 2026) y un caso defensivo para
+   timestamps que ya llegan con timezone. `_recortar_pandas()` (pandas, usado solo para contexto
+   diario) **no se tocó** — no tiene el bug en la práctica hoy (ver mapeo arriba), y tocarlo habría
+   exigido un índice tz-aware en todo el hot path de `runner.py` (`_valor_asof` incluido) por una
+   ganancia real nula en el caso de uso actual (solo diario). Documentado como riesgo latente si
+   alguna vez se reusa para intradía — el walker del paso 4 no debe reusar `_recortar_pandas` para
+   slicing intradía sin revisar esto primero.
+
+   **4. Hallazgo #2, no arreglado — separado de este checkpoint, con su propia tarea pendiente:**
+   al corregir los fixtures de test para usar el horario real de las velas diarias de Schwab
+   (05:00 UTC, no medianoche — necesario para que `filter_range()` fijo no divergiera de
+   `_recortar_pandas` en los tests de equivalencia), se destapó un bug real y separado en
+   `runner.py::_valor_asof()`: construye la consulta `asof` como `pd.Timestamp(dia)` (medianoche),
+   pero la vela diaria real de `dia` está a las 05:00 UTC (después de medianoche) — así que
+   `.asof(medianoche)` la excluye y devuelve la vela del día **anterior**. Confirmado con datos
+   reales de AAL: pedir "el valor de ayer" (`fin_contexto`=2021-05-19) devuelve el close de
+   **2021-05-18** (23.56), no el de 2021-05-19 (22.97). Afecta `cruce_ema_921_d/_5m/_15m/_4h`,
+   `sobre_sma200`/pivotes y `atr_pct` — es decir, la **clasificación** (score, DAY/SWING), no solo
+   la simulación de posición. **Confirmado que es exclusivo del camino de backtest/optimizador
+   vectorizado — el pipeline en vivo (`pipeline.py` → `engine/signals.py::detect_setup_timeframe`)
+   no pasa por `runner.py` ni por `_valor_asof`, calcula directo sobre datos frescos.** Las
+   clasificaciones DAY/SWING de hoy en el scanner en vivo no están afectadas. 7 tests marcados
+   `xfail` (no arreglados, documentados) en `test_runner_equivalencia_pandas.py` y
+   `test_runner_equivalencia_end_to_end.py`, citando este hallazgo. Tratamiento (fix, si hace
+   falta una sola re-corrida del optimizador combinada con el hallazgo #1 en vez de dos separadas,
+   y la nota de advertencia en `resumen_optimizador_2026-07.md`) — pendiente de decisión, no
+   forma parte del módulo 3BP.

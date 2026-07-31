@@ -47,11 +47,27 @@ def _estimate_periods(timeframe: str, start: date, end: date) -> int:
 
 
 def filter_range(df: pl.DataFrame, start: date, end: date) -> pl.DataFrame:
+    """`start`/`end` son fechas de trading NY (calendario del mercado, no
+    UTC). Los timestamps que llegan de Schwab son naive pero representan
+    un instante UTC (epoch ms casteado directo, ver
+    schwab_history._parse_response) — filtrar por `.dt.date()` directo
+    sobre eso compara contra la fecha calendario UTC, no la NY, y para
+    velas intradía (5m/15m/4h) eso corre la ventana ~4-5 horas según la
+    época del año (EST/EDT): un pedido de "el día X" termina devolviendo
+    la tarde/noche del día X-1 más la mañana del día X, no el día X
+    completo. Confirmado con datos reales — ver docs/spec_modulo_3bp_4bp.md,
+    sección 7 (hallazgo original) y "Checkpoint del paso 4" (confirmación
+    y fix). Para velas diarias esto no se notaba en la práctica porque el
+    timestamp diario de Schwab cae casualmente en la misma fecha NY que
+    UTC — coincidencia frágil, no una garantía, así que se convierte acá
+    también en vez de dejarlo como caso especial."""
     if df.is_empty():
         return df
+    ts = df["timestamp"]
+    ts_ny = ts.dt.replace_time_zone("UTC").dt.convert_time_zone("America/New_York") if ts.dtype.time_zone is None else ts.dt.convert_time_zone("America/New_York")
     return df.filter(
-        (pl.col("timestamp").dt.date() >= start)
-        & (pl.col("timestamp").dt.date() <= end)
+        (ts_ny.dt.date() >= start)
+        & (ts_ny.dt.date() <= end)
     )
 
 
