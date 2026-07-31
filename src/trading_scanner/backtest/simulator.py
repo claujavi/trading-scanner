@@ -14,11 +14,44 @@ no la calcula), así que se usa el mismo target de ATR que FIXED_RR
 """
 
 from dataclasses import dataclass
+from datetime import datetime, time
 from typing import Optional
 
 import polars as pl
 
 from ..models import ModoSalida, ScanConfig
+
+# Cierre forzado universal — ninguno de los 3 modos de salida debe simular
+# sostener una posición DAY más allá de este horario, sin importar qué haya
+# en los datos de entrada. Antes de este fix, ninguno de los 3 modos lo
+# aplicaba (ni siquiera TRAILING_EOD, pese a lo que decía la documentación
+# — ver docs/spec_modulo_3bp_4bp.md, punto 7): todos caían al último valor
+# de `velas_dia`, y en la práctica esas velas llegan a cubrir prácticamente
+# el día calendario completo (confirmado sobre datos reales cacheados —
+# candles hasta las 23:20 hora NY), muy por fuera de cualquier sesión de
+# trading real.
+_CIERRE_FORZADO_HORA_NY = time(15, 55)
+
+
+def _truncar_a_cierre_forzado(velas: pl.DataFrame) -> pl.DataFrame:
+    """Corta `velas` a las velas hasta las 15:55 NY del día de la PRIMERA
+    vela (la de entrada) — no simplemente "hora del día <= 15:55", porque
+    eso re-admitiría de forma incorrecta la madrugada del día siguiente si
+    `velas` llegara a cruzar medianoche (pasa en la práctica: los datos
+    reales cacheados de Schwab para un "día" llegan hasta ~23:20 hora NY,
+    ver comentario arriba). Los timestamps que llegan de Schwab (vía
+    schwab_history._parse_response) son naive pero representan un instante
+    UTC (epoch ms casteado directo a Datetime) — nunca hora NY — así que
+    hay que convertir antes de comparar."""
+    if velas.is_empty() or "timestamp" not in velas.columns:
+        return velas
+    ts = velas["timestamp"]
+    if ts.dtype.time_zone is None:
+        ts = ts.dt.replace_time_zone("UTC")
+    ts_ny = ts.dt.convert_time_zone("America/New_York")
+    primera = ts_ny[0]
+    corte = datetime.combine(primera.date(), _CIERRE_FORZADO_HORA_NY, tzinfo=primera.tzinfo)
+    return velas.filter(ts_ny <= corte)
 
 
 @dataclass
@@ -38,6 +71,10 @@ def simular(velas_dia: pl.DataFrame, atr: float, config: ScanConfig) -> Optional
     """velas_dia: velas de 5m del día de la señal, ordenadas por timestamp,
     empezando desde la vela de entrada (la primera vela de la sesión)."""
     if velas_dia is None or velas_dia.is_empty() or atr is None or atr <= 0:
+        return None
+
+    velas_dia = _truncar_a_cierre_forzado(velas_dia)
+    if velas_dia.is_empty():
         return None
 
     if config.modo_salida == ModoSalida.FIXED_RR:

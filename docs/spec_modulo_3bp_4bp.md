@@ -34,6 +34,42 @@ reemplaza ni se mezcla con el score existente: es una señal de timing paralela.
 
 ---
 
+## ⚠️ Corrección post-análisis de viabilidad: se descarta 2m para v1
+
+Al revisar la implementación contra el código real (sesión en VS Code, 2026-07-31) apareció un
+bloqueante que la versión original de esta spec no detectó.
+
+**Qué se asumió mal:** que 2m era descargable de Schwab tal cual, igual que 5m/15m, y que por eso
+era una capa "barata" de agregar por encima de los timeframes que ya usa el clasificador.
+
+**Por qué estaba mal:** la API de Schwab (vía `schwab-py`) solo expone frecuencias de 1, 5, 10, 15
+y 30 minutos —
+
+```python
+>>> [str(f) for f in schwab.client.Client.PriceHistory.Frequency]
+['Frequency.EVERY_MINUTE', 'Frequency.EVERY_FIVE_MINUTES', 'Frequency.EVERY_TEN_MINUTES',
+ 'Frequency.EVERY_FIFTEEN_MINUTES', 'Frequency.EVERY_THIRTY_MINUTES']
+```
+
+no existe "cada 2 minutos". Conseguir velas de 2m requeriría traer velas de **1 minuto**
+(que el sistema tampoco soporta hoy — `schwab_history.py`/`history_cache.py` solo conocen
+`"5m", "15m", "4h", "d"`) y bucketearlas a 2m a mano, tanto para el stream en vivo como para el
+historial de backtest. Es decir: 2m no era una capa liviana sobre 5m/15m, era **1m con un paso
+extra encima** — exactamente lo mismo (ruido operacional, retención de historia intradía sin
+confirmar) que ya había descartado 1m en la versión original de esta spec, ahora aplicado
+también a 2m, invirtiendo la razón original por la que se había elegido 2m en vez de 1m.
+
+**Decisión final:** v1 del módulo corre **solo en 5m y 15m** — los mismos timeframes que ya usa
+el clasificador de 6 criterios, sin agregar ningún timeframe nuevo ni soporte de 1m/2m. Ver
+"Fuera de alcance" más abajo (1m y 2m quedan unificados en un solo ítem pendiente de
+infraestructura, no como dos pendientes separados). Consecuencia práctica: los parámetros por
+timeframe de la sección 9 bajan de 3 perfiles (2m/5m/15m) a 2 (5m/15m) — 8 campos en total (4
+parámetros × 2 timeframes), y quedan como **campos planos en `ScanConfig`**, mismo patrón que el
+escalado de precio del filtro de variación diaria (`docs/backlog_mejoras_clasificador.md`,
+Prioridad 2) — no hace falta una estructura anidada con solo 2 timeframes.
+
+---
+
 ## Alcance de esta fase (in scope)
 
 ### 1. Universo y timeframes
@@ -41,19 +77,16 @@ reemplaza ni se mezcla con el score existente: es una señal de timing paralela.
 - Corre sobre **todas** las candidatas que pasaron el filtro de entrada (paso 0: precio, volumen
   promedio, ATR% mínimo, RelVol mínimo, variación diaria mínima, spread) — **no** filtrado por el
   criterio de catalizador ni por la clasificación DAY/SWING del scorer.
-- Timeframes: **2m, 5m y 15m** — decisión tomada tras evaluar correr también 1m. 5m/15m son
-  compartidos con el clasificador de 6 criterios (misma convención de "timeframes de
-  identificación de setup" que ya usa el sistema). 2m se suma como capa adicional **exclusiva de
-  3BP**, no usada por el clasificador — el curso valida 3BP en timeframes rápidos para momentum
-  temprano, pero 1m queda afuera por ahora: es el más ruidoso operacionalmente (el propio curso
-  marca los primeros 1-2 minutos de sesión como los más "whippy") y el más expuesto al riesgo de
-  retención corta de historia intradía en la API de Schwab (ver pregunta abierta en la sección de
-  backtest). Se evalúa sumar 1m más adelante, después de ver cómo rinde el backtest en 2/5/15.
-  Evaluado en tiempo real contra el stream (mismo mecanismo que ya usa el sistema para reevaluar
-  en vivo).
-- **Cada timeframe (2m, 5m, 15m) corre como detector independiente**, con su propio perfil de
+- Timeframes: **5m y 15m** — los mismos que ya usa el clasificador de 6 criterios (misma
+  convención de "timeframes de identificación de setup"), sin agregar ningún timeframe nuevo. 2m
+  y 1m quedan fuera de esta fase (ver corrección al inicio del documento y "Fuera de alcance") —
+  no son descargables/derivables de Schwab sin construir soporte de 1m + resampleo primero, y el
+  mismo argumento que descartaba 1m (ruido operacional, retención de historia intradía sin
+  confirmar) aplica igual a 2m. Evaluado en tiempo real contra el stream (mismo mecanismo que ya
+  usa el sistema para reevaluar en vivo).
+- **Cada timeframe (5m, 15m) corre como detector independiente**, con su propio perfil de
   parámetros (multiplicador WRB, tolerancia, N de invalidación, target R) — no se comparte un
-  solo perfil entre los tres, porque la volatilidad por barra difiere mucho entre 2m y 15m.
+  solo perfil entre los dos, porque la volatilidad por barra difiere entre 5m y 15m.
 - Solo direcciones **alcistas** (+3BP / +4BP). No se implementan variantes bajistas (-3BP/-4BP)
   en esta fase — ver "Fuera de alcance".
 
@@ -141,17 +174,34 @@ principio de reproducibilidad total que ya aplica el resto del sistema.
   requiere además aprobación explícita del trader, no es automático por volumen de datos. Esta
   lógica de aprobación no está codeada todavía, queda como principio a implementar.
 
-### 7. Fix de gap general del sistema (no exclusivo de 3BP)
+### 7. Fix de gap general del sistema (no exclusivo de 3BP) ✅ implementado
 
-Se detectó durante esta charla, aplica a todo el sistema, no solo al módulo nuevo:
+**Corrección respecto a la charla original:** se asumía que `TRAILING_EOD` ya tenía el cierre
+forzado a las 15:55 ET implementado y que solo faltaba extenderlo a `FIXED_RR`/`PARTIAL_SCALE`.
+Al revisar `backtest/simulator.py` no había **ningún** cierre forzado explícito en ninguno de los
+3 modos — los tres caían al último valor de `velas_dia` sin ningún chequeo de horario. Peor
+todavía: se confirmó sobre datos reales cacheados (`backtest_data/AAL/5m/2026/01.parquet`) que
+`velas_dia` para "un día" llega a cubrir velas hasta las **23:20 hora NY** — muy por fuera de
+cualquier sesión de trading real, no solo un poco después del cierre.
 
-- `TRAILING_EOD` ya tiene cierre forzado a las 15:55 ET definido explícitamente.
-- `FIXED_RR` y `PARTIAL_SCALE`, tal como están documentados hoy, **no** tienen ese cierre forzado
-  como parte de la lógica del modo — depende de que la rutina operativa general lo capture por
-  afuera.
-- **Fix requerido:** el cierre forzado a las 15:55 ET debe ser una regla universal aplicada por
-  encima de los 3 modos de salida para cualquier operación clasificada como DAY (incluidas las
-  disparadas por 3BP, que por timeframe siempre son DAY) — no una característica de un solo modo.
+**Fix implementado:** `simulator.py::_truncar_a_cierre_forzado()` corta las velas a las 15:55 NY
+del día de la vela de entrada, aplicado **una sola vez en `simular()`** antes de despachar a
+cualquiera de los 3 modos — no duplicado en cada uno. Como los 3 modos ya caían naturalmente al
+último valor disponible cuando no se tocaba stop/target, truncar la serie de entrada alcanza para
+que los 3 respeten el cierre forzado sin tocar su lógica interna. Timestamps de Schwab son naive
+pero representan un instante UTC (no hora NY) — se convierte explícitamente antes de comparar.
+Corte por fecha+hora completa (no solo "hora del día ≤ 15:55"), para no re-admitir por error la
+madrugada del día siguiente si la serie llegara a cruzar medianoche. Tests en
+`tests/unit/test_simulator.py` (primer test directo que tiene `simulator.py` en el proyecto).
+
+**Hallazgo adicional, no arreglado en esta pasada (fuera del alcance pedido):**
+`history_cache.py::filter_range()` filtra por `timestamp.dt.date()` sobre el timestamp crudo, que
+es **UTC**, no hora NY — para un `fecha` que se interpreta como día de trading NY, el filtro en
+realidad agarra un rango corrido ~5 horas (parte de la sesión NY del día anterior + parte de la
+de hoy, según la época del año por el cambio de horario EST/EDT). El fix de este punto 7 mitiga
+el síntoma más grave (ya no se sostiene la posición hasta la medianoche), pero no corrige de raíz
+qué velas exactas componen "el día" que llega a `simular()`. Queda anotado para evaluar aparte —
+no bloquea el módulo 3BP ni nada de lo ya implementado.
 
 ### 8. Backtest
 
@@ -169,6 +219,12 @@ Se detectó durante esta charla, aplica a todo el sistema, no solo al módulo nu
 
 ## Fuera de alcance en esta fase (backlog explícito, no construir todavía)
 
+- **Timeframes rápidos (1m/2m), pendiente de infraestructura.** Unificado en un solo ítem — no
+  son dos pendientes separados. Bloqueante real (ver corrección al inicio del documento): Schwab
+  no ofrece frecuencia de 2 minutos (solo 1/5/10/15/30), así que 2m requeriría construir soporte
+  de 1m (`schwab_history.py`/`history_cache.py` no lo tienen hoy) + resampleo a 2m, tanto para el
+  stream en vivo como para el historial de backtest — infraestructura nueva, no una capa liviana.
+  Evaluar más adelante, después de tener 5m/15m funcionando y calibrado.
 - Variantes bajistas -3BP/-4BP.
 - Cola de detección en daily/weekly (versión swing del mismo patrón) — queda anotada para
   evaluar más adelante, no se define universo ni cadencia todavía.
@@ -191,5 +247,23 @@ Se detectó durante esta charla, aplica a todo el sistema, no solo al módulo nu
 | Target R (perfil FIXED_RR genérico) | Confirmar valor actual del sistema | Verificar |
 | Target R (perfil FIXED_RR específico 3BP) | Sin definir — debería ser mayor que el genérico | A definir con backtest |
 
-Nota: los parámetros de arriba son por timeframe — 2m, 5m y 15m van a necesitar valores propios,
-no un único valor compartido (ver punto 1, "cada timeframe corre como detector independiente").
+Nota: los parámetros de arriba son por timeframe — 5m y 15m van a necesitar valores propios, no
+un único valor compartido (ver punto 1, "cada timeframe corre como detector independiente"). Son
+**8 campos en total** (4 parámetros × 2 timeframes) como campos planos en `ScanConfig` (ej.
+`bp_3_4_wrb_multiplicador_5m`, `bp_3_4_wrb_multiplicador_15m`, etc.) — mismo patrón que el
+escalado de precio del filtro de variación diaria, sin estructura anidada (ver corrección al
+inicio del documento).
+
+---
+
+## Orden de trabajo acordado
+
+1. **Fix del cierre forzado EOD (sección 7) ✅ hecho** — ver detalle arriba.
+2. **Módulo de detección puro** — función(es) testeables en aislado (máquina de estados sobre una
+   serie de velas), sin dependencia de Schwab ni del stream. La definición mecánica (sección 2) ya
+   está al nivel de precisión necesario para codear esto directo, sin más ida y vuelta de spec.
+3. **Wireo en vivo** — expandir `market_data_cache.py` para bucketear **dos** series en paralelo
+   (5m y 15m) en vez de solo 5m como hoy, y correr el detector sobre cada una.
+4. **Backtest walker nuevo** — basado en el patrón de `backtest/simulator.py` (que ya camina vela
+   por vela), no en `backtest/runner.py` (que evalúa "un día = un contexto" con lookups `asof`,
+   forma incompatible con una máquina de estados intradía).
