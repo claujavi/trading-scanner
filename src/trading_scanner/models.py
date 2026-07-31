@@ -184,6 +184,32 @@ class ScanConfig(BaseModel):
     # Aplica en entrada Y salida (ida y vuelta). Valor conservador: 5 bps por lado.
     slippage_bps: float = Field(5.0, ge=0)
 
+    # ── Módulo 3BP/4BP (docs/spec_modulo_3bp_4bp.md) ─────────────────────────
+    # Señal de timing paralela — no toca el score de 6 criterios ni el
+    # espacio de pesos del optimizador (peso_*). Cada timeframe (5m/15m)
+    # corre como detector independiente con su propio perfil — 10 campos en
+    # total (5 parámetros × 2 timeframes), campos planos, sin estructura
+    # anidada (ver corrección en la spec). Todos son placeholders "a
+    # calibrar" — ninguno tiene todavía respaldo de backtest.
+    bp34_wrb_multiplicador_5m: float = Field(2.0, gt=0)  # k: rango barra 1 >= k × ATR14
+    bp34_wrb_multiplicador_15m: float = Field(2.0, gt=0)
+    bp34_tolerancia_pct_5m: float = Field(0.25, ge=0)  # "máximos relativamente iguales", punto medio de ±20-30%
+    bp34_tolerancia_pct_15m: float = Field(0.25, ge=0)
+    bp34_n_invalidacion_5m: int = Field(10, gt=0)  # barras sin ruptura desde Estado 2 antes de invalidar — sin propuesta de partida en la spec
+    bp34_n_invalidacion_15m: int = Field(10, gt=0)
+    bp34_target_r_5m: float = Field(3.0, gt=0)  # perfil FIXED_RR específico de 3BP, no el rr_target genérico
+    bp34_target_r_15m: float = Field(3.0, gt=0)
+    # Ventana de barras previas sin WRB para que barra 1 "inicie" el
+    # movimiento — por timeframe: 4 barras representan ~15-25 min de
+    # contexto en 5m contra ~45-75 min en 15m, no tiene sentido calificar
+    # "inicio de movimiento" con la misma vara en los dos.
+    bp34_ventana_inicio_barras_5m: int = Field(4, gt=0)
+    bp34_ventana_inicio_barras_15m: int = Field(4, gt=0)
+    # Compartido entre timeframes — la spec ya lo especifica así (sección 1
+    # enumera taxativamente qué es "por timeframe": WRB, tolerancia, N de
+    # invalidación, target R — el umbral de volumen no está en esa lista).
+    bp34_volumen_confirmado_mult: float = Field(2.0, gt=0)  # volumen >= X × promedio en barra gatillo → tier "confirmado"
+
     # ── Validaciones cruzadas entre campos relacionados ──────────────────────
     @model_validator(mode="after")
     def _validar_rangos_relacionados(self) -> "ScanConfig":

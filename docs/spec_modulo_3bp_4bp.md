@@ -200,8 +200,9 @@ es **UTC**, no hora NY — para un `fecha` que se interpreta como día de tradin
 realidad agarra un rango corrido ~5 horas (parte de la sesión NY del día anterior + parte de la
 de hoy, según la época del año por el cambio de horario EST/EDT). El fix de este punto 7 mitiga
 el síntoma más grave (ya no se sostiene la posición hasta la medianoche), pero no corrige de raíz
-qué velas exactas componen "el día" que llega a `simular()`. Queda anotado para evaluar aparte —
-no bloquea el módulo 3BP ni nada de lo ya implementado.
+qué velas exactas componen "el día" que llega a `simular()`. No bloquea el módulo 3BP ni nada de
+lo ya implementado — atado explícitamente como checkpoint obligatorio del paso 4 (backtest
+walker) en "Orden de trabajo acordado", no dejado como nota suelta acá.
 
 ### 8. Backtest
 
@@ -238,32 +239,99 @@ no bloquea el módulo 3BP ni nada de lo ya implementado.
 
 ## Parámetros iniciales propuestos (placeholders, sin calibrar)
 
-| Parámetro | Valor de partida propuesto | Estado |
-|---|---|---|
-| Multiplicador WRB (k) | 2 × ATR14 | A calibrar |
-| Tolerancia "máximos relativamente iguales" | ±20-30% del rango de barra 1 | A calibrar |
-| N barras de expiración (invalidación) | Sin propuesta | A definir con backtest |
-| Umbral de volumen para tier "confirmado" | ≥ 2× promedio en barra gatillo | A calibrar |
-| Target R (perfil FIXED_RR genérico) | Confirmar valor actual del sistema | Verificar |
-| Target R (perfil FIXED_RR específico 3BP) | Sin definir — debería ser mayor que el genérico | A definir con backtest |
+| Parámetro | Valor de partida propuesto | Estado | Alcance |
+|---|---|---|---|
+| Multiplicador WRB (k) | 2 × ATR14 | A calibrar | Por timeframe |
+| Tolerancia "máximos relativamente iguales" | ±20-30% del rango de barra 1 (25% usado como punto medio) | A calibrar | Por timeframe |
+| N barras de expiración (invalidación) | 10 (placeholder, sin propuesta original) | A definir con backtest | Por timeframe |
+| Target R (perfil FIXED_RR específico 3BP) | 3.0 (placeholder, sin definir en la charla original) | A definir con backtest | Por timeframe |
+| Ventana de inicio (barras previas sin WRB) | 4 (dentro del rango "3-5" propuesto) | A calibrar | Por timeframe |
+| Umbral de volumen para tier "confirmado" | ≥ 2× promedio en barra gatillo | A calibrar | Compartido |
+| Target R (perfil FIXED_RR genérico) | Confirmar valor actual del sistema | Verificar | N/A — es `rr_target`, no un campo nuevo |
 
-Nota: los parámetros de arriba son por timeframe — 5m y 15m van a necesitar valores propios, no
-un único valor compartido (ver punto 1, "cada timeframe corre como detector independiente"). Son
-**8 campos en total** (4 parámetros × 2 timeframes) como campos planos en `ScanConfig` (ej.
-`bp_3_4_wrb_multiplicador_5m`, `bp_3_4_wrb_multiplicador_15m`, etc.) — mismo patrón que el
-escalado de precio del filtro de variación diaria, sin estructura anidada (ver corrección al
-inicio del documento).
+Nota: **12 campos por-timeframe en total** (5 parámetros × 2 timeframes: `bp34_wrb_multiplicador`,
+`bp34_tolerancia_pct`, `bp34_n_invalidacion`, `bp34_target_r`, `bp34_ventana_inicio_barras`, cada
+uno con sufijo `_5m`/`_15m`) + **1 compartido** (`bp34_volumen_confirmado_mult`) — campos planos en
+`ScanConfig`, mismo patrón que el escalado de precio del filtro de variación diaria, sin
+estructura anidada (ver corrección al inicio del documento). Detalle de por qué cada uno quedó
+por-timeframe o compartido, en el punto 2 de "Orden de trabajo acordado".
 
 ---
 
 ## Orden de trabajo acordado
 
 1. **Fix del cierre forzado EOD (sección 7) ✅ hecho** — ver detalle arriba.
-2. **Módulo de detección puro** — función(es) testeables en aislado (máquina de estados sobre una
-   serie de velas), sin dependencia de Schwab ni del stream. La definición mecánica (sección 2) ya
-   está al nivel de precisión necesario para codear esto directo, sin más ida y vuelta de spec.
+2. **Módulo de detección puro ✅ hecho** — `engine/pattern_3bp.py`: `Detector3BP`, máquina de
+   estados en memoria (una instancia por ticker+timeframe), sin dependencia de Schwab ni del
+   stream — `procesar_barra(vela, atr14, volumen_promedio)` se llama una vez por vela ya cerrada
+   y devuelve un evento solo en las transiciones (POSIBLE/ESPERANDO_ENTRADA/ENTRADA/vuelta a
+   SIN_PATRON), `None` si la vela no cambió nada. 14 tests en `tests/unit/test_pattern_3bp.py`,
+   incluyendo el ejemplo numérico exacto de la spec (barra 1 min=2/max=10/pm=6).
+
+   **Interpretaciones no 100% literales de la spec — confirmadas después de revisión, con el
+   detalle completo de qué decía la spec, la ambigüedad y la decisión final:**
+
+   - **(a) Barra que no confirma grupo ni invalida, inmediatamente después de la barra 1.** La
+     spec (sección 2) define "confirma grupo" (mínimo ≥ pm, máximo ≤ techo) e "invalida" (cierra
+     bajo el mínimo de barra 1), pero nunca contempla el tercer caso: una barra que no hace
+     ninguna de las dos cosas. **Decisión confirmada:** se descarta el patrón entero y se vuelve
+     a `SIN_PATRON` — no se espera a una barra futura no inmediata. Motivo: el patrón se define
+     como barras **consecutivas** (barra 1, barra 2, barra 3/4, en ese orden inmediato — así lo
+     describe el curso en cada ejemplo), no "barra 1 y en algún momento posterior una que
+     califique". Se descartó tratar una ruptura inmediata (sin ninguna barra de grupo) como un
+     "gatillo de 2 barras" válido, porque la spec es explícita en que el mínimo son 3 barras.
+   - **(b) Qué barras cuentan para el N de invalidación en Estado 2.** La spec (sección 3) dice
+     "pasan más de N barras sin ruptura desde que se alcanzó Estado 2", sin aclarar si N cuenta
+     *todas* las barras transcurridas o solo las que *no* confirman grupo. **Decisión
+     confirmada: interpretación (i)** — el contador suma en cada barra dentro de
+     `ESPERANDO_ENTRADA`, confirme grupo o no. Se descartó la interpretación (ii) (contar solo
+     barras "fallidas") porque permitiría que el patrón se extendiera sin límite mientras cada
+     barra nueva siguiera confirmando tolerancia. **Verificado explícitamente que ese escenario
+     era real y no estaba evitado por otro lado:** el grupo no tenía ningún tope duro de tamaño
+     en la primera versión del código — cualquier barra que confirmaba la condición de
+     posición/techo se agregaba sin chequear cuántas ya había, así que sin la interpretación (i)
+     el grupo sí podría haber crecido indefinidamente.
+
+   **Hallazgo posterior, corregido antes de cerrar este paso:** la nota de arriba decía, sin
+   corregir, que "un grupo de 3+ barras igual se reporta como `tipo='4BP'`" — eso contradice
+   directamente el motivo por el que en (a) se descartó dejar que el patrón se extendiera más
+   allá de barras consecutivas acotadas: "3 y 4 Bar Play" es una definición **cerrada**, no
+   "N Bar Play". Dejarlo así habría sido inconsistente con la propia decisión de (a) en el mismo
+   documento. **Fix aplicado:** el grupo ahora tiene tope duro de 2 barras (`_GRUPO_MAX_BARRAS`
+   en `pattern_3bp.py`, barra 2 + barra 3 = máximo 4BP). Si aparece una barra candidata a una
+   3ra barra de grupo (confirma la condición de posición/techo) pero el grupo ya está en el tope,
+   el patrón se descarta directo (`SIN_PATRON`) en vez de seguir extendiéndolo — mismo criterio
+   que (a): sin estructura válida, no hay señal. Con el tope, `tipo = "3BP" if len(grupo)==1
+   else "4BP"` deja de tener ambigüedad (el "else" ahora solo puede significar `len(grupo)==2`).
+   Test agregado: `test_descarta_el_patron_si_una_tercera_barra_candidata_a_grupo_excede_el_tope`.
+
+   **Campos de `ScanConfig` — 12 en total (5 parámetros × 2 timeframes, después de la corrección
+   de abajo) + 1 compartido:**
+   - Por timeframe (`_5m`/`_15m`): `bp34_wrb_multiplicador`, `bp34_tolerancia_pct`,
+     `bp34_n_invalidacion`, `bp34_target_r`, y **`bp34_ventana_inicio_barras`** (corregido — ver
+     abajo, antes estaba compartido por error de categorización).
+   - Compartido: `bp34_volumen_confirmado_mult` — esto **sí** está respaldado textualmente por la
+     spec, no es una relajación: la sección 1 enumera taxativamente los 4 parámetros "por
+     timeframe" (WRB, tolerancia, N de invalidación, target R) y el umbral de volumen no está en
+     esa lista; la sección 9 también lo trata como una sola fila, no una por timeframe.
+   - Ninguno de los 12+1 campos tocado por el optimizador (verificado, `search_space.py` no los
+     referencia).
+
+   **Corrección: `bp34_ventana_inicio_barras` pasa de compartido a por-timeframe.** A diferencia
+   de `bp34_volumen_confirmado_mult`, este parámetro (la ventana de "3-5 barras" para chequear
+   que la barra 1 "inicia" un movimiento, sección 2) **no tenía respaldo textual** para quedar
+   compartido — la spec original nunca lo categorizó ni en la lista de la sección 1 ni en la
+   tabla de la sección 9 (quedó sin asignar en la versión previa del documento). Se corrigió a
+   por-timeframe (`bp34_ventana_inicio_barras_5m` / `_15m`) porque 4 barras representan
+   contextos de mercado muy distintos según el timeframe (~15-25 min en 5m contra ~45-75 min en
+   15m) — no tiene sentido calificar "inicio de movimiento" con la misma vara en los dos.
 3. **Wireo en vivo** — expandir `market_data_cache.py` para bucketear **dos** series en paralelo
    (5m y 15m) en vez de solo 5m como hoy, y correr el detector sobre cada una.
 4. **Backtest walker nuevo** — basado en el patrón de `backtest/simulator.py` (que ya camina vela
    por vela), no en `backtest/runner.py` (que evalúa "un día = un contexto" con lookups `asof`,
    forma incompatible con una máquina de estados intradía).
+   **Checkpoint obligatorio antes de escribir el walker** (ver hallazgo en sección 7): confirmar
+   que los límites de día usados coinciden con el día de trading NY real, no con el corte UTC de
+   `filter_range()` — si no coinciden, la lógica de invalidación por N barras y la evaluación día
+   por día pueden estar caminando sobre límites de día incorrectos. No arrancar el walker sin
+   resolver esto primero.
