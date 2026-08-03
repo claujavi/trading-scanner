@@ -24,9 +24,10 @@ chequeo secundario, pero no como fuente para calibrar parámetros.
 
 import asyncio
 import re
-from datetime import date, datetime, timedelta
+from datetime import date, datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import pandas as pd
 import polars as pl
@@ -105,14 +106,35 @@ def _recortar_pandas(pdf: pd.DataFrame, inicio: date, fin: date) -> pd.DataFrame
     return pdf.loc[pd.Timestamp(inicio) : pd.Timestamp(fin) + timedelta(days=1) - timedelta(microseconds=1)]
 
 
+NY_TZ = ZoneInfo("America/New_York")
+
+
 def _valor_asof(serie: pd.Series, dia: date):
-    """Último valor de una serie ya indexada por fecha, en o antes de `dia`
-    (equivalente a "el valor de ayer" cuando `dia` = fin_contexto) — None si
-    todavía no hay ningún dato a esa altura (mismo caso que hoy devuelve
-    None por datos insuficientes)."""
+    """Último valor de una serie ya indexada por fecha, en o antes del CIERRE
+    del día de trading NY `dia` (equivalente a "el valor de ayer" cuando
+    `dia` = fin_contexto) — None si todavía no hay ningún dato a esa altura
+    (mismo caso que hoy devuelve None por datos insuficientes).
+
+    El índice de la serie son timestamps naive-pero-UTC (misma convención que
+    Schwab en todo el sistema, ver history_cache.py::filter_range) — la vela
+    diaria de `dia` cae a las 05:00 UTC, no a medianoche. Consultar
+    `serie.asof(pd.Timestamp(dia))` (medianoche) excluía esa propia vela y
+    devolvía la de un día antes (bug confirmado con datos reales de AAL, ver
+    docs/spec_modulo_3bp_4bp.md, checkpoint del paso 4). El límite correcto es
+    el cierre del día NY `dia` = el instante justo antes de la medianoche NY
+    de `dia + 1`, convertido a su equivalente UTC naive — así cubre cualquier
+    hora del día que use la convención real de Schwab (05:00 UTC diario, y
+    cualquier hora dentro del día para series intradía), sin depender de a
+    qué hora exacta cae el timestamp."""
     if serie.empty:
         return None
-    valor = serie.asof(pd.Timestamp(dia))
+    limite_ny = datetime.combine(dia + timedelta(days=1), datetime.min.time(), tzinfo=NY_TZ)
+    # -1ms, no microsegundos: el índice real (Schwab) viene en resolución de
+    # milisegundos (pl.Datetime("ms")) — un offset de microsegundos no es
+    # representable en esa unidad y pandas lo rechaza ("Cannot losslessly
+    # convert units") al construir el Timestamp de consulta.
+    limite_utc_naive = limite_ny.astimezone(timezone.utc).replace(tzinfo=None) - timedelta(milliseconds=1)
+    valor = serie.asof(pd.Timestamp(limite_utc_naive))
     if valor is None or (isinstance(valor, float) and pd.isna(valor)):
         return None
     return valor

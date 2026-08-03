@@ -99,33 +99,7 @@ def test_recorte_pandas_da_mismo_precio_y_volumen_que_polars():
 
 _DIAS_DE_PRUEBA = [date(2023, 6, 1), date(2024, 3, 15), date(2025, 1, 10), date(2026, 5, 20)]
 
-# Bug real y separado confirmado con datos reales de Schwab (AAL, mayo 2021):
-# runner._valor_asof(serie, dia) construye la consulta como pd.Timestamp(dia)
-# (medianoche). Las velas diarias reales de Schwab están timestampeadas a las
-# 05:00 UTC (no medianoche) — por eso `.asof(medianoche de dia)` excluye la
-# propia vela de `dia` (queda a las 05:00, DESPUÉS de la medianoche
-# consultada) y devuelve la del día ANTERIOR. "El valor de ayer" que
-# documenta la función en realidad es "el valor de anteayer". Quedó oculto
-# hasta ahora porque estos fixtures usaban timestamps a medianoche exacta
-# (no representativos de la convención real de Schwab, corregido arriba en
-# _ohlcv_realista para los tests de filter_range/_recortar_pandas) — con
-# medianoche, `.asof(medianoche)` sí devuelve el día correcto, escondiendo
-# el bug. Alcance: solo el camino de backtest/optimizador vectorizado
-# (runner.py) — el pipeline en vivo (pipeline.py -> engine/signals.py) no
-# pasa por acá, calcula directo sobre datos frescos. Tratamiento (fix,
-# re-corrida del optimizador, nota en resumen_optimizador_2026-07.md) a
-# definir por separado — no forma parte de la checkpoint de filter_range().
-_XFAIL_VALOR_ASOF = pytest.mark.xfail(
-    reason="_valor_asof() consulta a medianoche pero las velas diarias reales están a las 05:00 UTC -> devuelve el valor de un día antes del esperado. Bug real, tratamiento pendiente por separado.",
-    strict=False,  # cruce_ema/sobre_ma son booleanos: algunos días el shift de un
-    # día no cambia el resultado (coincidencia, no evidencia de que el bug no
-    # exista) — con strict=True esos casos "pasan por suerte" romperían la
-    # suite como XPASS. atr_pct (float) sí falla en los 4 casos, de forma
-    # consistente con el bug siendo sistemático.
-)
 
-
-@_XFAIL_VALOR_ASOF
 @pytest.mark.parametrize("fecha", _DIAS_DE_PRUEBA)
 def test_serie_cruce_ema_vectorizada_coincide_con_detect_cruce_ema_por_dia(fecha):
     config = ScanConfig()
@@ -144,7 +118,6 @@ def test_serie_cruce_ema_vectorizada_coincide_con_detect_cruce_ema_por_dia(fecha
     assert obtenido == esperado
 
 
-@_XFAIL_VALOR_ASOF
 @pytest.mark.parametrize("fecha", _DIAS_DE_PRUEBA)
 def test_serie_sobre_ma_vectorizada_coincide_con_above_ma_por_dia(fecha):
     config = ScanConfig()
@@ -166,7 +139,6 @@ def test_serie_sobre_ma_vectorizada_coincide_con_above_ma_por_dia(fecha):
         assert bool(obtenido) == esperado
 
 
-@_XFAIL_VALOR_ASOF
 @pytest.mark.parametrize("fecha", _DIAS_DE_PRUEBA)
 def test_serie_atr_pct_vectorizada_coincide_con_calc_atr_pct_por_dia(fecha):
     config = ScanConfig()

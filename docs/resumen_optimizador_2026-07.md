@@ -1,5 +1,15 @@
 # Resumen — Optimización del scanner (jul 2026)
 
+> **⚠️ OBSOLETO (2026-08-03).** Este run se calculó con dos bugs de "día NY vs UTC" todavía
+> presentes en `history_cache.py::filter_range()` y `backtest/runner.py::_valor_asof()` — ambos
+> afectaban directamente la clasificación (cruce_ema, sobre_sma200, atr_pct) y la simulación de
+> posición (entrada/stop/target) que Optuna usó para elegir estos parámetros. Con `n=7` trades ya
+> señalado como muestra chica más abajo, no solo las métricas sino la propia config ganadora quedan
+> en duda. Ambos bugs están corregidos (ver `docs/spec_modulo_3bp_4bp.md`, checkpoint del paso 4) y
+> hay una re-corrida en curso — ver `docs/resumen_optimizador_2026-08.md` cuando termine. Se deja
+> este documento como registro histórico del trabajo de infraestructura del optimizador (sigue
+> siendo válido, no tocó nada de esto), no como fuente de calibración.
+
 Contexto para retomar la conversación sobre calibración de parámetros del trading scanner.
 
 ## Qué se hizo

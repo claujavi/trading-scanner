@@ -410,22 +410,39 @@ por-timeframe o compartido, en el punto 2 de "Orden de trabajo acordado".
    alguna vez se reusa para intradía — el walker del paso 4 no debe reusar `_recortar_pandas` para
    slicing intradía sin revisar esto primero.
 
-   **4. Hallazgo #2, no arreglado — separado de este checkpoint, con su propia tarea pendiente:**
-   al corregir los fixtures de test para usar el horario real de las velas diarias de Schwab
+   **4. Hallazgo #2 — ✅ corregido (2026-08-03).**
+   Al corregir los fixtures de test para usar el horario real de las velas diarias de Schwab
    (05:00 UTC, no medianoche — necesario para que `filter_range()` fijo no divergiera de
-   `_recortar_pandas` en los tests de equivalencia), se destapó un bug real y separado en
-   `runner.py::_valor_asof()`: construye la consulta `asof` como `pd.Timestamp(dia)` (medianoche),
+   `_recortar_pandas` en los tests de equivalencia), se había destapado un bug real y separado en
+   `runner.py::_valor_asof()`: construía la consulta `asof` como `pd.Timestamp(dia)` (medianoche),
    pero la vela diaria real de `dia` está a las 05:00 UTC (después de medianoche) — así que
-   `.asof(medianoche)` la excluye y devuelve la vela del día **anterior**. Confirmado con datos
-   reales de AAL: pedir "el valor de ayer" (`fin_contexto`=2021-05-19) devuelve el close de
-   **2021-05-18** (23.56), no el de 2021-05-19 (22.97). Afecta `cruce_ema_921_d/_5m/_15m/_4h`,
+   `.asof(medianoche)` la excluía y devolvía la vela del día **anterior**. Confirmado con datos
+   reales de AAL: pedir "el valor de ayer" (`fin_contexto`=2021-05-19) devolvía el close de
+   **2021-05-18** (23.56), no el de 2021-05-19 (22.97). Afectaba `cruce_ema_921_d/_5m/_15m/_4h`,
    `sobre_sma200`/pivotes y `atr_pct` — es decir, la **clasificación** (score, DAY/SWING), no solo
-   la simulación de posición. **Confirmado que es exclusivo del camino de backtest/optimizador
+   la simulación de posición. Confirmado que es exclusivo del camino de backtest/optimizador
    vectorizado — el pipeline en vivo (`pipeline.py` → `engine/signals.py::detect_setup_timeframe`)
-   no pasa por `runner.py` ni por `_valor_asof`, calcula directo sobre datos frescos.** Las
-   clasificaciones DAY/SWING de hoy en el scanner en vivo no están afectadas. 7 tests marcados
-   `xfail` (no arreglados, documentados) en `test_runner_equivalencia_pandas.py` y
-   `test_runner_equivalencia_end_to_end.py`, citando este hallazgo. Tratamiento (fix, si hace
-   falta una sola re-corrida del optimizador combinada con el hallazgo #1 en vez de dos separadas,
-   y la nota de advertencia en `resumen_optimizador_2026-07.md`) — pendiente de decisión, no
-   forma parte del módulo 3BP.
+   no pasa por `runner.py` ni por `_valor_asof`, calcula directo sobre datos frescos. Las
+   clasificaciones DAY/SWING de hoy en el scanner en vivo nunca estuvieron afectadas.
+
+   **Fix:** `_valor_asof()` ahora calcula el límite de consulta como el cierre del día de trading
+   NY `dia` — el instante justo antes de la medianoche NY de `dia + 1`, convertido a su
+   equivalente UTC naive (mismo patrón de conversión a `America/New_York` ya usado en
+   `filter_range()`; nunca se usa la hora local de Buenos Aires para esto — ver discusión de
+   zonas horarias más abajo). Esto cubre tanto la convención diaria real de Schwab (05:00 UTC)
+   como cualquier hora dentro del día para las series intradía precalculadas, sin depender de a
+   qué hora exacta cae el timestamp. Los 7 tests que estaban `xfail` en
+   `test_runner_equivalencia_pandas.py` y `test_runner_equivalencia_end_to_end.py` vuelven a
+   correr sin el marcador y pasan (verificado, más el resto de la suite: 195 tests, 0 fallos).
+
+   **Pendiente de decisión, no forma parte del módulo 3BP:** `docs/resumen_optimizador_2026-07.md`
+   (71.4% win rate, profit factor 9.06, 7 trades) se calculó con ambos bugs presentes — sigue sin
+   la nota de advertencia y sin decidir si conviene una sola re-corrida del optimizador combinando
+   ambos fixes.
+
+   **Nota sobre zonas horarias para más adelante (Sprint 5, ejecución de órdenes):** el patrón ya
+   establecido en todo el sistema es UTC para persistir timestamps y `America/New_York` para
+   cualquier decisión de límites de sesión/día (mismo criterio que `_en_horario_habil()` en
+   `schwab_client.py`). Buenos Aires no participa de ninguna lógica de trading — a lo sumo,
+   cuando haya fills de órdenes reales, se podría convertir la hora de ejecución a Buenos Aires
+   solo para mostrarla en la UI, nunca para decidir nada (límites de día, cierre forzado EOD, etc.).
