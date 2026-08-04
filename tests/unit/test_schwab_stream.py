@@ -191,6 +191,26 @@ def test_stream_manager_agregar_tickers_sin_conexion_no_rompe():
     asyncio.run(body())
 
 
+def test_stream_manager_real_acepta_on_evento_3bp():
+    """Regresión: StreamManager (el real) tiene su propio __init__ que
+    sobreescribe el de BaseStreamManager — agregar un parámetro nuevo ahí
+    y no acá pasa desapercibido en los tests (que solo instancian
+    MockStreamManager) pero rompe crear_stream_manager() en producción con
+    credenciales reales (modo REAL), con un TypeError silencioso detrás
+    del pipeline lento. Ver bug real encontrado 2026-08-04: el stream
+    nunca conectaba porque StreamManager(cache, on_evento, on_evento_3bp)
+    fallaba con 'takes 3 positional arguments but 4 were given'."""
+    async def on_evento(ticker: str):
+        pass
+
+    async def on_evento_3bp(ticker: str, timeframe: str, evento):
+        pass
+
+    cache = _cache_con_ticker()
+    mgr = StreamManager(cache, on_evento, on_evento_3bp)
+    assert mgr._on_evento_3bp is on_evento_3bp
+
+
 # ── _despachar_eventos_3bp — cola de eventos ENTRADA del módulo 3BP/4BP ────
 
 

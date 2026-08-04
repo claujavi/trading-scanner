@@ -100,8 +100,13 @@ class StreamManager(BaseStreamManager):
 
     _modo = "REAL"
 
-    def __init__(self, cache: MarketDataCache, on_evento: OnEventoSignificativo):
-        super().__init__(cache, on_evento)
+    def __init__(
+        self,
+        cache: MarketDataCache,
+        on_evento: OnEventoSignificativo,
+        on_evento_3bp: Optional[OnEvento3BP] = None,
+    ):
+        super().__init__(cache, on_evento, on_evento_3bp)
         self._stream_client = None
         self._task: Optional[asyncio.Task] = None
         self._stop_solicitado = False
