@@ -102,6 +102,70 @@ ajuste de umbral. Es una **modificación del criterio 3 existente**, no toca pes
 
 ---
 
+## Prioridad 3.5 — SWING se simula igual que DAY (cierre forzado el mismo día)
+
+**Hallazgo (2026-08-04), al revisar trade por trade el resultado de la re-corrida del optimizador
+post-fix** (`docs/resumen_optimizador_2026-08.md`, trial ganador `curado_v3_fix_dia`): de los 15
+trades simulados, varios clasificados `SWING` (CVE, BILI, STM, NOK, EQNR, GIS, TEVA, GMAB, CPRT,
+NKE) se simularon **exactamente igual** que los `DAY` — entrada en la apertura, cierre forzado a
+las 15:55 ET **del mismo día**, sin ninguna posibilidad de sostener la posición más de una sesión.
+`backtest/simulator.py::simular()` recibe siempre `velas_dia = filter_range(df_5m_full, fecha,
+fecha)` (ver `runner.py::_evaluar_dia_desde_cache`) — un solo día, sin importar la clasificación.
+Conceptualmente un SWING debería sostenerse varios días; hoy el sistema nunca prueba eso, ni en
+backtest ni (por construcción, ya que el simulador es el mismo) en cómo se gestionaría en vivo.
+
+**Decisión tomada (2026-08-04), para implementar:**
+- Las posiciones clasificadas `SWING` ganan un corte programado propio: **15 días hábiles** (~3
+  semanas), en vez del cierre forzado al mismo día que hoy comparten con `DAY`. Constante fija,
+  **no** un campo que optimice Optuna — sin datos reales todavía para calibrar el número, y
+  agregar otra variable libre al espacio de búsqueda repite el mismo riesgo de sobreajuste que ya
+  motivó no tocar los `peso_*`.
+- Mientras la posición sigue abierta, se reusa el trailing stop que ya existe (
+  `trailing_activacion_r` mueve a breakeven, `trailing_lock_r` asegura ganancia) — protege
+  resultado sin necesitar una máquina de estados nueva.
+- **No implica reescribir el simulador como caminador de múltiples días completo** — alcanza con
+  extender `runner.py`/`simulator.py` para que, cuando la clasificación sea `SWING`, la ventana de
+  velas evaluada cubra hasta 15 días hábiles en vez de 1, aplicando el mismo criterio de cierre
+  forzado (target/stop/trailing) sobre esa ventana más ancha.
+
+**Pendiente para más adelante, documentado a propósito para no perderlo:** una versión más
+inteligente del corte (cerrar según qué tan lejos se movió el precio, no un N fijo de días) exige
+una infraestructura de posición con estado persistente entre días — el mismo tipo de trabajo que
+el walker del paso 4 de `spec_modulo_3bp_4bp.md` (caminar vela por vela con estado, en vez de "un
+día = un contexto" como hace `runner.py` hoy). Son proyectos separados —el walker del paso 4 es
+específicamente para backtestear el patrón 3BP/4BP, no la gestión de posición SWING del
+clasificador de 6 criterios— pero comparten la misma idea de fondo, y si en algún momento se
+construye esa infraestructura general, tiene sentido revisar si sirve para ambos casos.
+
+**Status:** ✅ implementado (2026-08-04). `simulator.py::simular()` gana `fecha_limite_cierre`
+opcional (default `None` = comportamiento DAY sin cambios); `_truncar_a_cierre_forzado()` corta en
+ese día si se pasa, en vez del día de la primera vela — deja pasar los días intermedios completos.
+`runner.py::_sumar_dias_habiles()` (nuevo) calcula la fecha límite; `_evaluar_dia_desde_cache()`
+arma la ventana de velas 5m según la clasificación (`fecha` a `fecha` para DAY, `fecha` a `fecha +
+14 días hábiles` para SWING) y pasa `fecha_limite_cierre` solo en el caso SWING.
+`_evaluar_ticker_para_dias()` extiende el pedido de velas 5m (`fin_5m`) más allá del último día
+evaluado, para que haya datos disponibles con los que sostener un SWING generado cerca del final
+del rango pedido. 8 tests nuevos (`tests/unit/test_simulator.py`,
+`tests/unit/test_runner_batch_por_ticker.py`) — target/stop cruzando días, cierre en el último día
+(no el primero), `_sumar_dias_habiles` con fin de semana, y el fetch extendido de 5m. Pendiente:
+re-correr el optimizador/backtest con este fix para ver cómo cambian los números de
+`docs/resumen_optimizador_2026-08.md` (probablemente mejoran para SWING).
+
+**Seguimiento (2026-08-04) — stop/target acotados, no rediseñados:** se discutió si redefinir el
+stop directamente en dólares fijos según el capital (ej. "stop = entrada − $2" con $200 y 1% de
+riesgo). Se descartó: el precio del stop es una decisión de mercado/volatilidad (ATR), independiente
+del capital — lo que sí depende del capital es la **cantidad de acciones** a comprar dado ese stop
+(`CDAD = riesgo_$ / (entrada − stop)`), que es exactamente el gap de money management ya anotado
+en la Prioridad 4 más abajo, con una fórmula de referencia concreta provista por el trader (ver esa
+sección). En cambio, se acotó `stop_atr_multiplicador` en `optimizer/search_space.py` de `0.8-3.0`
+a `1.0-2.0` (centrado en el default 1.5, la regla R2 de `spec_modulo_3bp_4bp.md`) — el rango viejo
+permitía a Optuna encontrar 2.74 como "mejor" stop, que combinado con `rr_target` alto ponía el
+target a ~10x ATR de distancia (inalcanzable en la ventana de simulación, target desactivado de
+facto). `rr_target` queda sin tocar (1.2-4.0) — decisión explícita de dejar que Optuna siga
+explorando libremente qué R rinde mejor, ahora con un stop realista de base.
+
+---
+
 ## Prioridad 4 — Money management real (ver advertencia arriba)
 
 Hallazgo de la revisión de código: `perdida_maxima_diaria_pct`, `posiciones_simultaneas_max` y
@@ -121,6 +185,23 @@ Los puntos "límites en capas" y "protocolo simétrico de toma de ganancias" (an
 existe: tracking real de R acumulado. Secuencia sugerida: primero conectar lo que ya existe pero
 está muerto (simple), después decidir si conviene el esquema en capas del curso o uno propio más
 simple, y recién ahí sumar el protocolo de ganancias.
+
+**Fórmula de referencia para position sizing (aportada por el trader, 2026-08-04)** — así calculaba
+esto manualmente antes del sistema, sirve como base concreta cuando se implemente:
+
+```
+stop_dist_teorico = entrada − stop          # entrada y stop ya decididos (técnico/ATR), no acá
+cantidad_acciones = round(riesgo_$ / stop_dist_teorico)
+capital_usado     = entrada × cantidad_acciones          # informativo
+r_efectivo_$      = riesgo_$ / cantidad_acciones          # ajustado por el redondeo de acciones
+target(nR)        = entrada + nR × r_efectivo_$            # nR = 1, 1.5, 2, 2.5, 3...
+```
+
+Ejemplo verificado (capital $300, riesgo fijo $3/trade ≈ 1%): ticker con entrada $2.70, stop $2.44
+→ `cantidad_acciones = round(3 / 0.26) = 12`, `capital_usado = $32.40`, `r_efectivo_$ = 3/12 = $0.25`
+→ target 2R = `2.70 + 2×0.25 = $3.20`. El detalle importante: los targets usan `r_efectivo_$`
+(ajustado por el redondeo de `cantidad_acciones`), no la distancia técnica cruda — así la pérdida
+real, si salta el stop, queda lo más cerca posible de `riesgo_$` exacto pese al redondeo.
 
 **Status:** el de mayor alcance técnico de la lista — y el único con carácter de bloqueante para
 producción, no de mejora opcional.

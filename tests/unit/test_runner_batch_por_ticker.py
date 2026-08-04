@@ -117,3 +117,48 @@ def test_evaluar_ticker_para_dias_sin_historial_no_rompe(monkeypatch):
     )
 
     assert resultados == []
+
+
+# ── _sumar_dias_habiles ─────────────────────────────────────────────────────
+
+
+def test_sumar_dias_habiles_salta_fines_de_semana():
+    # jueves 2026-01-15 + 1 día hábil = viernes 16; +2 = lunes 19 (salta sáb/dom)
+    assert runner._sumar_dias_habiles(date(2026, 1, 15), 1) == date(2026, 1, 16)
+    assert runner._sumar_dias_habiles(date(2026, 1, 15), 2) == date(2026, 1, 19)
+
+
+def test_sumar_dias_habiles_cero_devuelve_la_misma_fecha():
+    assert runner._sumar_dias_habiles(date(2026, 1, 15), 0) == date(2026, 1, 15)
+
+
+def test_sumar_dias_habiles_desde_un_viernes():
+    assert runner._sumar_dias_habiles(date(2026, 1, 16), 1) == date(2026, 1, 19)
+
+
+# ── ventana de velas 5m: SWING pide más allá del último día evaluado ───────
+
+
+def test_evaluar_ticker_para_dias_pide_5m_mas_alla_del_ultimo_dia_para_swing(monkeypatch):
+    """Un SWING generado en el último día evaluado necesita hasta
+    _SWING_DIAS_HABILES_MAX días hábiles de velas 5m HACIA ADELANTE para
+    poder simular el sostenimiento completo — el pedido de 5m debe
+    extenderse más allá de `dias[-1]`, a diferencia de 4h/15m/d que solo
+    necesitan contexto hacia atrás."""
+    dias = _dias_habiles(date(2026, 2, 2), date(2026, 2, 6))  # lun a vie
+    ultimo_dia = dias[-1]
+    esperado = runner._sumar_dias_habiles(ultimo_dia, runner._SWING_DIAS_HABILES_MAX - 1)
+
+    fechas_fin_pedidas: dict[str, date] = {}
+
+    async def fake_get_history(ticker, timeframe, fecha_inicio, fecha_fin):
+        fechas_fin_pedidas[timeframe] = fecha_fin
+        return pl.DataFrame()
+
+    monkeypatch.setattr(runner.history_cache, "get_history", fake_get_history)
+
+    asyncio.run(runner._evaluar_ticker_para_dias("AAPL", dias, ScanConfig()))
+
+    assert fechas_fin_pedidas["5m"] == esperado
+    assert fechas_fin_pedidas["4h"] == ultimo_dia - timedelta(days=1)
+    assert fechas_fin_pedidas["15m"] == ultimo_dia - timedelta(days=1)

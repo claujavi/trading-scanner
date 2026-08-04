@@ -1,7 +1,10 @@
 """
 simulator.py — simula el resultado de una señal según el modo de salida
-configurado (ScanConfig.modo_salida), usando velas intradía (5m) del
-mismo día de la señal.
+configurado (ScanConfig.modo_salida), usando velas intradía (5m). DAY
+sostiene un solo día; SWING puede sostener hasta
+runner.py::_SWING_DIAS_HABILES_MAX días hábiles (ver `fecha_limite_cierre`
+en `simular()`) — decisión tomada 2026-08-04, ver
+docs/backlog_mejoras_clasificador.md, Prioridad 3.5.
 
 Asume operaciones LONG-ONLY. El resto del sistema está orientado a comprar
 fuerza/momentum (ivr_umbral_compra habla de "opciones baratas para comprar",
@@ -14,7 +17,7 @@ no la calcula), así que se usa el mismo target de ATR que FIXED_RR
 """
 
 from dataclasses import dataclass
-from datetime import datetime, time
+from datetime import date, datetime, time
 from typing import Optional
 
 import polars as pl
@@ -33,13 +36,18 @@ from ..models import ModoSalida, ScanConfig
 _CIERRE_FORZADO_HORA_NY = time(15, 55)
 
 
-def _truncar_a_cierre_forzado(velas: pl.DataFrame) -> pl.DataFrame:
-    """Corta `velas` a las velas hasta las 15:55 NY del día de la PRIMERA
-    vela (la de entrada) — no simplemente "hora del día <= 15:55", porque
-    eso re-admitiría de forma incorrecta la madrugada del día siguiente si
-    `velas` llegara a cruzar medianoche (pasa en la práctica: los datos
-    reales cacheados de Schwab para un "día" llegan hasta ~23:20 hora NY,
-    ver comentario arriba). Los timestamps que llegan de Schwab (vía
+def _truncar_a_cierre_forzado(velas: pl.DataFrame, fecha_limite: Optional[date] = None) -> pl.DataFrame:
+    """Corta `velas` a las velas hasta las 15:55 NY del día límite — por
+    defecto, el día de la PRIMERA vela (la de entrada), para posiciones que
+    cierran el mismo día (DAY, o SWING antes del corte de
+    `_SWING_DIAS_HABILES_MAX` en runner.py). `fecha_limite` permite
+    sostener varios días (SWING): el corte aplica al ÚLTIMO día permitido,
+    no al primero, dejando pasar las velas de los días intermedios sin
+    tocar — no simplemente "hora del día <= 15:55", porque eso re-admitiría
+    de forma incorrecta la madrugada del día siguiente si `velas` llegara a
+    cruzar medianoche (pasa en la práctica: los datos reales cacheados de
+    Schwab para un "día" llegan hasta ~23:20 hora NY, ver comentario
+    arriba). Los timestamps que llegan de Schwab (vía
     schwab_history._parse_response) son naive pero representan un instante
     UTC (epoch ms casteado directo a Datetime) — nunca hora NY — así que
     hay que convertir antes de comparar."""
@@ -50,7 +58,8 @@ def _truncar_a_cierre_forzado(velas: pl.DataFrame) -> pl.DataFrame:
         ts = ts.dt.replace_time_zone("UTC")
     ts_ny = ts.dt.convert_time_zone("America/New_York")
     primera = ts_ny[0]
-    corte = datetime.combine(primera.date(), _CIERRE_FORZADO_HORA_NY, tzinfo=primera.tzinfo)
+    dia_corte = fecha_limite if fecha_limite is not None else primera.date()
+    corte = datetime.combine(dia_corte, _CIERRE_FORZADO_HORA_NY, tzinfo=primera.tzinfo)
     return velas.filter(ts_ny <= corte)
 
 
@@ -67,13 +76,23 @@ def _slippage(precio: float, config: ScanConfig, es_entrada: bool) -> float:
     return precio + ajuste if es_entrada else precio - ajuste
 
 
-def simular(velas_dia: pl.DataFrame, atr: float, config: ScanConfig) -> Optional[ResultadoSimulacion]:
-    """velas_dia: velas de 5m del día de la señal, ordenadas por timestamp,
-    empezando desde la vela de entrada (la primera vela de la sesión)."""
+def simular(
+    velas_dia: pl.DataFrame,
+    atr: float,
+    config: ScanConfig,
+    fecha_limite_cierre: Optional[date] = None,
+) -> Optional[ResultadoSimulacion]:
+    """velas_dia: velas de 5m ordenadas por timestamp, empezando desde la
+    vela de entrada (la primera vela de la sesión). Por defecto cubre un
+    solo día (DAY, o SWING sin `fecha_limite_cierre`) — `fecha_limite_cierre`
+    permite sostener la posición varios días (SWING, ver runner.py::
+    _SWING_DIAS_HABILES_MAX): el cierre forzado a las 15:55 NY aplica recién
+    en ese día, no en el de la vela de entrada. target/stop se siguen
+    revisando vela a vela sin cambios — cruzan días sin ningún ajuste extra."""
     if velas_dia is None or velas_dia.is_empty() or atr is None or atr <= 0:
         return None
 
-    velas_dia = _truncar_a_cierre_forzado(velas_dia)
+    velas_dia = _truncar_a_cierre_forzado(velas_dia, fecha_limite_cierre)
     if velas_dia.is_empty():
         return None
 

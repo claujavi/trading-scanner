@@ -1,4 +1,4 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
 
 import polars as pl
 import pytest
@@ -49,6 +49,54 @@ def test_truncar_df_vacio_no_rompe():
     assert _truncar_a_cierre_forzado(vacio).is_empty()
 
 
+def _velas_multidia(n_dias: int, velas_por_dia: int = 79, precio_base: float = 100.0, alza_diaria: float = 0.0) -> pl.DataFrame:
+    """`n_dias` sesiones hábiles consecutivas (arrancando el jueves
+    2026-01-15, EST — mismo día base que _NY_0930_UTC, evita cruzar DST),
+    `velas_por_dia` velas de 5m cada una desde la apertura NY. El precio
+    sube `alza_diaria` al arrancar cada día nuevo, para poder verificar en
+    qué día exacto se resuelve un trade multi-día."""
+    timestamps: list[datetime] = []
+    precios: list[float] = []
+    fecha = date(2026, 1, 15)
+    precio = precio_base
+    for _ in range(n_dias):
+        apertura = datetime.combine(fecha, datetime.min.time()) + timedelta(hours=14, minutes=30)
+        for i in range(velas_por_dia):
+            timestamps.append(apertura + timedelta(minutes=5 * i))
+            precios.append(precio)
+        precio += alza_diaria
+        fecha += timedelta(days=1)
+        while fecha.weekday() >= 5:
+            fecha += timedelta(days=1)
+    return pl.DataFrame({
+        "timestamp": timestamps,
+        "open": precios,
+        "high": [p + 0.05 for p in precios],
+        "low": [p - 0.05 for p in precios],
+        "close": precios,
+        "volume": [100_000] * len(precios),
+    })
+
+
+def test_truncar_con_fecha_limite_no_corta_los_dias_intermedios():
+    """fecha_limite debe cortar el ÚLTIMO día permitido, dejando pasar
+    completos los días anteriores — a diferencia del comportamiento default
+    (sin fecha_limite), que corta el PRIMER día."""
+    velas = _velas_multidia(n_dias=3, velas_por_dia=79)  # 237 velas totales
+    fecha_dia_3 = date(2026, 1, 19)  # 15(jue) -> 16(vie) -> 19(lun), saltando fin de semana
+
+    resultado = _truncar_a_cierre_forzado(velas, fecha_limite=fecha_dia_3)
+
+    # días 1 y 2 completos (79 c/u) + día 3 cortado a las 15:55 (78 velas)
+    assert resultado.height == 79 + 79 + 78
+
+
+def test_truncar_sin_fecha_limite_sigue_cortando_el_primer_dia():
+    velas = _velas_multidia(n_dias=3, velas_por_dia=79)
+    resultado = _truncar_a_cierre_forzado(velas)
+    assert resultado.height == 78  # solo el día 1, truncado
+
+
 # ── simular(): el cierre forzado aplica a los 3 modos por igual ────────────
 
 
@@ -74,3 +122,39 @@ def test_simular_no_sostiene_mas_alla_de_las_15_55_ny(modo):
     precio_vela_199 = 100.0 + 199  # última vela de la serie completa, sin truncar
     assert resultado.precio_salida == pytest.approx(precio_vela_77, abs=0.5)
     assert resultado.precio_salida < precio_vela_199 - 50
+
+
+# ── simular(): sostenimiento multi-día (SWING, fecha_limite_cierre) ────────
+
+
+def test_simular_con_fecha_limite_cierre_sostiene_varios_dias_hasta_target():
+    """Target que no se alcanza el día 1 pero sí el día 2 — sin
+    fecha_limite_cierre esto se truncaría al día 1 y resolvería por eod,
+    nunca por target. Con fecha_limite_cierre (día 3), el trade sigue vivo
+    el día 2 y toca el target ahí."""
+    config = ScanConfig(modo_salida=ModoSalida.FIXED_RR, stop_atr_multiplicador=1.0, rr_target=2.0)
+    # entrada=100, atr=1 -> stop_dist=1, target=102. Sube $0.5/día: recién
+    # el día 3 alguna vela llega a high=102 (100 + 2*0.5 + 0.05 margen high).
+    velas = _velas_multidia(n_dias=3, velas_por_dia=10, precio_base=100.0, alza_diaria=1.0)
+    fecha_limite = date(2026, 1, 19)  # día 3
+
+    resultado = simular(velas, atr=1.0, config=config, fecha_limite_cierre=fecha_limite)
+
+    assert resultado is not None
+    assert resultado.motivo_salida == "target"
+
+
+def test_simular_con_fecha_limite_cierre_resuelve_eod_en_el_ultimo_dia_no_en_el_primero():
+    """Sin tocar stop ni target, un SWING sostenido debe resolverse por el
+    cierre del ÚLTIMO día permitido (fecha_limite_cierre), no por el
+    cierre del primer día — a diferencia de un DAY (sin fecha_limite_cierre)."""
+    config = ScanConfig(modo_salida=ModoSalida.FIXED_RR, stop_atr_multiplicador=50.0, rr_target=50.0)
+    velas = _velas_multidia(n_dias=3, velas_por_dia=10, precio_base=100.0, alza_diaria=1.0)
+    fecha_limite = date(2026, 1, 19)  # día 3
+
+    resultado = simular(velas, atr=1.0, config=config, fecha_limite_cierre=fecha_limite)
+
+    assert resultado is not None
+    assert resultado.motivo_salida == "eod"
+    # precio del día 3 (100 + 2*1.0 = 102), no del día 1 (100)
+    assert resultado.precio_salida == pytest.approx(102.0, abs=0.5)

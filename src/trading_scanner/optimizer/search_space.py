@@ -43,7 +43,17 @@ def sugerir_config(trial: optuna.Trial, config_base: ScanConfig) -> ScanConfig:
         "ivr_umbral_venta": ivr_umbral_venta,
         "umbral_decision": trial.suggest_float("umbral_decision", 2.0, 6.0),
         "rr_target": trial.suggest_float("rr_target", 1.2, 4.0),
-        "stop_atr_multiplicador": trial.suggest_float("stop_atr_multiplicador", 0.8, 3.0),
+        # Acotado a 1.0-2.0 (antes 0.8-3.0) — hallazgo 2026-08-04: sin límite
+        # realista, Optuna encontró 2.74 como "mejor" stop, que combinado con
+        # rr_target alto ponía el target a ~10x ATR de distancia — en la
+        # práctica inalcanzable en la ventana de simulación, así que el
+        # target quedaba desactivado de facto (ver
+        # docs/resumen_optimizador_2026-08.md). El rango nuevo centra el
+        # default (1.5) y respeta la regla R2 ya documentada en
+        # spec_modulo_3bp_4bp.md: "el stop final es el mayor entre ATR14×1.5
+        # y el nivel técnico más cercano" — 1.5x es la referencia, no un
+        # extremo del rango.
+        "stop_atr_multiplicador": trial.suggest_float("stop_atr_multiplicador", 1.0, 2.0),
         "slippage_bps": trial.suggest_float("slippage_bps", 0.0, 15.0),
     }
     # model_copy(update=...) no re-valida — se arma con model_dump()+ScanConfig(**)

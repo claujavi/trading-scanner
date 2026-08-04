@@ -68,6 +68,32 @@ def _dias_habiles(inicio: date, fin: date) -> list[date]:
     return dias
 
 
+def _sumar_dias_habiles(fecha: date, n: int) -> date:
+    """`fecha` más `n` días hábiles (lunes-viernes, sin descontar feriados —
+    mismo criterio MVP que _dias_habiles). n=0 devuelve `fecha` tal cual."""
+    actual = fecha
+    contados = 0
+    while contados < n:
+        actual += timedelta(days=1)
+        if actual.weekday() < 5:
+            contados += 1
+    return actual
+
+
+_SWING_DIAS_HABILES_MAX = 15
+"""Corte programado para posiciones SWING: sostener hasta 15 días hábiles
+(~3 semanas) desde la entrada, en vez del cierre forzado el mismo día que
+compartía con DAY hasta el 2026-08-04. Hallazgo: el simulador nunca
+distinguía DAY de SWING (ambos cerraban a las 15:55 NY del día de entrada),
+así que ningún backtest probó de verdad cómo rinde un swing sostenido más
+de un día — ver docs/resumen_optimizador_2026-08.md. Constante fija, NO
+optimizada por Optuna (no está en optimizer/search_space.py): no hay datos
+reales todavía para calibrar el número, y agregarlo como variable libre
+repetiría el riesgo de sobreajuste que ya evita no tocar los peso_* (ver
+CLAUDE.md). Ver docs/backlog_mejoras_clasificador.md, Prioridad 3.5, para
+la versión más inteligente pendiente (cierre según movimiento, no N fijo)."""
+
+
 def _a_pandas_indexado(df: pl.DataFrame) -> pd.DataFrame:
     """Convierte una sola vez por ticker (no una vez por día) a pandas con
     índice de tiempo ordenado — las funciones de indicators/trend.py y
@@ -287,9 +313,18 @@ def _evaluar_dia_desde_cache(
     simulacion = None
     if result.clasificacion in (Clasificacion.DAY, Clasificacion.SWING) and atr_pct:
         atr_valor = precio_hoy * atr_pct / 100.0
-        velas_dia = history_cache.filter_range(df_5m_full, fecha, fecha)
-        if not velas_dia.is_empty():
-            simulacion = simular(velas_dia, atr_valor, config)
+        if result.clasificacion == Clasificacion.SWING:
+            # Corte a _SWING_DIAS_HABILES_MAX días hábiles (decisión
+            # 2026-08-04) en vez de un solo día — ver docstring de la
+            # constante y docs/backlog_mejoras_clasificador.md Prioridad 3.5.
+            fecha_limite = _sumar_dias_habiles(fecha, _SWING_DIAS_HABILES_MAX - 1)
+            velas_dia = history_cache.filter_range(df_5m_full, fecha, fecha_limite)
+            if not velas_dia.is_empty():
+                simulacion = simular(velas_dia, atr_valor, config, fecha_limite_cierre=fecha_limite)
+        else:
+            velas_dia = history_cache.filter_range(df_5m_full, fecha, fecha)
+            if not velas_dia.is_empty():
+                simulacion = simular(velas_dia, atr_valor, config)
 
     return result, simulacion
 
@@ -321,6 +356,16 @@ async def _evaluar_ticker_para_dias(
     inicio_intraday = max(dias_ordenados[0] - timedelta(days=15), piso_intraday)
     hay_intraday = fin_max >= piso_intraday
 
+    # Una señal SWING generada en el último día evaluado necesita hasta
+    # _SWING_DIAS_HABILES_MAX días hábiles de velas 5m HACIA ADELANTE para
+    # poder simular el sostenimiento completo (ver _evaluar_dia_desde_cache)
+    # — sin esto, cualquier SWING cerca del final del rango pedido se
+    # simularía con menos días de los que la config permite, no por una
+    # limitación real de datos sino porque nunca se pidieron. Si el rango
+    # pedido llega hasta "hoy" (o cerca), Schwab simplemente no tiene esas
+    # velas todavía — el pedido no falla, devuelve lo que exista.
+    fin_5m = _sumar_dias_habiles(dias_ordenados[-1], _SWING_DIAS_HABILES_MAX - 1)
+
     async def _pedir_intraday(timeframe: str, fecha_fin: date) -> pl.DataFrame:
         if not hay_intraday:
             return pl.DataFrame()
@@ -332,7 +377,7 @@ async def _evaluar_ticker_para_dias(
                 history_cache.get_history(ticker, "d", inicio_d, fin_max),
                 _pedir_intraday("4h", fin_max),
                 _pedir_intraday("15m", fin_max),
-                _pedir_intraday("5m", dias_ordenados[-1]),
+                _pedir_intraday("5m", fin_5m),
             )
         except Exception as exc:
             console.log(f"[yellow]Backtest: sin historial de contexto para {ticker}: {exc}[/yellow]")
