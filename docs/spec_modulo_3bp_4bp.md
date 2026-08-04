@@ -365,7 +365,7 @@ por-timeframe o compartido, en el punto 2 de "Orden de trabajo acordado".
    4 tests nuevos en `tests/unit/test_market_data_cache_3bp.py` (series separadas del historial,
    detectores instanciados con la config correcta, bucketeo 5m/15m en paralelo sin interferirse,
    y detección real de una barra 1 WRB a través del wireo completo).
-4. **Backtest walker nuevo** — basado en el patrón de `backtest/simulator.py` (que ya camina vela
+4. **Backtest walker nuevo ✅ hecho (2026-08-04)** — basado en el patrón de `backtest/simulator.py` (que ya camina vela
    por vela), no en `backtest/runner.py` (que evalúa "un día = un contexto" con lookups `asof`,
    forma incompatible con una máquina de estados intradía).
 
@@ -446,3 +446,67 @@ por-timeframe o compartido, en el punto 2 de "Orden de trabajo acordado".
    `schwab_client.py`). Buenos Aires no participa de ninguna lógica de trading — a lo sumo,
    cuando haya fills de órdenes reales, se podría convertir la hora de ejecución a Buenos Aires
    solo para mostrarla en la UI, nunca para decidir nada (límites de día, cierre forzado EOD, etc.).
+
+   **El walker en sí — ✅ implementado (2026-08-04).**
+
+   `backtest/walker_3bp.py::caminar_3bp(ticker, timeframe, fecha_inicio, fecha_fin, config)` —
+   caminador vela por vela, reusa el mismo `Detector3BP` que corre en vivo. Replica exactamente el
+   reseteo diario que ya hace `market_data_cache.py::seed()`: un `Detector3BP` fresco y un
+   contexto vacío por cada día de trading (mismo "punto ciego" de los primeros ~15-45 minutos de
+   sesión, documentado en el paso 3, también presente acá por construcción). ATR14 y volumen
+   promedio de referencia se calculan con las mismas funciones privadas que ya usa el stream
+   (`_atr14_de_velas`, `_volumen_promedio_de_velas`, `_a_vela_pattern`, `_crear_detector_3bp`,
+   importadas de `market_data_cache.py` en vez de reimplementarlas). Un mismo día puede producir
+   varias entradas independientes (el detector vuelve a `SIN_PATRON` apenas emite `ENTRADA`).
+
+   Cada entrada (Estado 3) se sigue con el precio real post-señal **dentro del mismo día**
+   (3BP es una señal de timing intradía — la spec no define sostenimiento multi-día para este
+   módulo, a diferencia del SWING del clasificador de 6 criterios) hasta tocar target, tocar stop,
+   o el cierre forzado a las 15:55 NY (`simulator.py::_truncar_a_cierre_forzado`, reusada — ahora
+   acepta un `fecha_limite` opcional, ver el fix de SWING más abajo en el changelog del backlog).
+   Si una barra toca stop y target a la vez, gana el stop (mismo criterio pesimista que
+   `simulator.py::_fixed_rr`) — con solo OHLC no hay forma de saber el orden real intra-barra. La
+   barra gatillo misma se revisa también (el breakout que dispara la entrada puede seguir
+   moviéndose, o revertir, en esa misma barra).
+
+   `backtest/metrics_3bp.py` agrega resultados en un `Bp34BacktestRun` — corrida separada del
+   optimizador de 6 criterios (nunca mezclados), un timeframe por corrida. Reusa los helpers puros
+   de `backtest/metrics.py` (`_win_rate`, `_rr_promedio`, `_profit_factor`) por duck-typing sobre
+   `.resultado_r` — no hace falta reimplementarlos. Solo persiste el agregado (mismo criterio que
+   `run_backtest()` del clasificador, que tampoco persiste cada `ScanResult` de un backtest).
+
+   **Modelo y persistencia — vivo y backtest comparten la misma tabla.** `Bp34Evento` (nuevo en
+   `models.py`) sigue el mismo patrón que `ScanResult`/`FuenteDatos` (`LIVE`/`HISTORICO`). Tabla
+   `bp34_eventos` en Turso, separada de `scan_results`/`backtest_runs` — nunca mezclada con el
+   clasificador de 6 criterios. Esto cierra un gap real encontrado al arrancar este paso: el wireo
+   en vivo (paso 3) generaba eventos pero no los persistía en ningún lado ni los mostraba — la
+   sección 6 de esta spec ("modo shadow") hablaba de "registrar la operación" pero eso no pasaba
+   en la práctica. Fix: `MarketDataCache` gana una cola (`_eventos_3bp_pendientes` +
+   `drenar_eventos_3bp()`) que se llena cuando `_procesar_3bp` recibe un evento en Estado `ENTRADA`
+   — drenada por `schwab_stream.py::_despachar_eventos_3bp()` (mismo patrón `asyncio.create_task`
+   que ya usa `_despachar_si_evento` para no bloquear `handle_message()`), llamada después de cada
+   `actualizar_vela_1m()` (real y mock). `main.py::_on_evento_3bp` persiste con `fuente=LIVE`.
+
+   **Limitación deliberada del MVP en vivo, documentada a propósito:** solo se persiste la entrada
+   (`resultado=ABIERTO`) — el seguimiento del resultado real (tocó target/stop) todavía **no**
+   está implementado para el modo vivo, a diferencia del backtest (que sí sigue el precio histórico
+   completo post-señal). Cerrarlo requeriría trackear posiciones abiertas contra el stream en
+   tiempo real, fuera de alcance de este paso — anotado como pendiente, no una sorpresa a
+   descubrir después.
+
+   Página `/patrones-3bp` (`api/patrones_3bp.py` + `templates/patrones_3bp.html`) — separada del
+   dashboard y de `/backtest` (spec, sección 5: "no se mezcla con el score"), mismo patrón HTMX que
+   el resto del sistema. Muestra eventos recientes (vivo + backtest) y corridas de backtest
+   pasadas; formulario para lanzar un backtest nuevo (tickers, timeframe, rango de fechas).
+
+   27 tests nuevos (`test_walker_3bp.py`, `test_metrics_3bp.py`, + extensiones a
+   `test_schwab_stream.py` y `test_market_data_cache_3bp.py`) — incluye el ejemplo numérico exacto
+   de la spec llevado de punta a punta a través del walker (no solo del detector puro, que ya
+   estaba cubierto). Suite completa: 220 tests, 0 fallos.
+
+   **Pendiente, fuera de esta pasada:** calibrar los 12+1 campos `bp34_*` con Optuna (siguen en los
+   placeholders de la spec — k=2, N=10, target=3.0R, tolerancia=25%, ver tabla más abajo); validar
+   la profundidad real de historial de 5m/15m contra Schwab para este módulo específicamente (ya
+   se sabe en general que arranca ~nov-2025, ver CLAUDE.md, pero no se corrió un backtest real
+   todavía para confirmar cuántas señales produce en la práctica); seguimiento de resultado en
+   vivo (ver limitación de arriba).

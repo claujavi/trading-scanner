@@ -367,3 +367,80 @@ class BacktestRun(BaseModel):
     señales_red: int
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+# ============================================================================
+# MÓDULO 3BP/4BP — señal de timing paralela, ver docs/spec_modulo_3bp_4bp.md.
+# No se mezcla con ScanResult/BacktestRun (score de 6 criterios): tablas y
+# modelos propios, mismo principio de separación que ya sigue el código
+# (engine/pattern_3bp.py, ScanConfig.bp34_*).
+# ============================================================================
+
+
+class ResultadoBp34(str, Enum):
+    """Resultado de una operación shadow 3BP, siguiendo el precio real
+    post-señal (spec, sección 6)."""
+
+    TARGET = "TARGET"
+    STOP = "STOP"
+    SIN_DEFINIR = "SIN_DEFINIR"  # cierre forzado del día sin tocar ninguno
+    ABIERTO = "ABIERTO"  # solo en vivo: se persistió el evento ENTRADA, todavía sin seguimiento de resultado
+
+
+class Bp34Evento(BaseModel):
+    """Un evento de detección 3BP/4BP — contrato de salida de
+    engine/pattern_3bp.py::EventoPatron3BP más el resultado de seguir el
+    precio real post-señal (spec, sección 6), en vivo o en backtest."""
+
+    id: Optional[int] = None
+
+    ticker: str
+    timeframe: str  # "5m" | "15m"
+    fecha: date
+    timestamp: datetime  # de la barra gatillo (Estado 3 — ENTRADA)
+    fuente: FuenteDatos
+
+    tipo: str  # "3BP" | "4BP"
+    tier: str  # "confirmado" | "sin_confirmar"
+    entry: float
+    stop: float
+    target: float  # entry + (entry-stop) × config.bp34_target_r_{timeframe}
+
+    # ── Resultado del seguimiento post-señal ─────────────────────────────────
+    resultado: ResultadoBp34 = ResultadoBp34.ABIERTO
+    resultado_r: Optional[float] = None
+    mfe_r: Optional[float] = None  # máxima excursión favorable, en R
+    mae_r: Optional[float] = None  # máxima excursión adversa, en R
+    tiempo_en_trade_minutos: Optional[int] = None
+
+    # Reproducibilidad total — mismo principio que ScanResult.config_snapshot
+    config_snapshot: dict
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)
+
+
+class Bp34BacktestRun(BaseModel):
+    """Métricas agregadas de un backtest del módulo 3BP/4BP — tabla y
+    modelo propios, separados de BacktestRun (spec, sección 8)."""
+
+    id: Optional[int] = None
+
+    config_snapshot: dict
+    timeframe: str  # "5m" | "15m" — se calibra por separado, nunca mezclado
+    fecha_inicio: date
+    fecha_fin: date
+    tickers: list[str]
+
+    total_eventos: int
+    total_entradas: int  # eventos que llegaron a Estado 3 (con resultado != ABIERTO)
+    win_rate: float
+    win_rate_confirmado: float  # tier "confirmado"
+    win_rate_sin_confirmar: float
+    rr_promedio: float
+    profit_factor: float
+
+    señales_target: int
+    señales_stop: int
+    señales_sin_definir: int
+
+    created_at: datetime = Field(default_factory=datetime.utcnow)

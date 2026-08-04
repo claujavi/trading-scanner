@@ -189,3 +189,56 @@ def test_stream_manager_agregar_tickers_sin_conexion_no_rompe():
         await mgr.agregar_tickers(["AAPL"])  # sin conexión activa: no debe lanzar
 
     asyncio.run(body())
+
+
+# ── _despachar_eventos_3bp — cola de eventos ENTRADA del módulo 3BP/4BP ────
+
+
+def test_despachar_eventos_3bp_agenda_una_tarea_por_evento_y_vacia_la_cola():
+    async def body():
+        from trading_scanner.engine.pattern_3bp import Estado3BP, EventoPatron3BP
+
+        llamados = []
+
+        async def on_evento(ticker: str):
+            pass
+
+        async def on_evento_3bp(ticker: str, timeframe: str, evento):
+            llamados.append((ticker, timeframe, evento))
+
+        cache = _cache_con_ticker("AAPL")
+        evento1 = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=datetime(2026, 1, 2, 9, 35), tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
+        evento2 = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=datetime(2026, 1, 2, 9, 50), tipo="4BP", entry=20.0, stop=19.0, tier="sin_confirmar")
+        cache._eventos_3bp_pendientes = [("AAPL", "5m", evento1), ("AAPL", "15m", evento2)]
+
+        mgr = MockStreamManager(cache, on_evento, on_evento_3bp=on_evento_3bp)
+        mgr._despachar_eventos_3bp()
+
+        assert cache._eventos_3bp_pendientes == []  # drenada
+        await asyncio.sleep(0)  # deja correr las tareas agendadas con create_task
+
+        assert len(llamados) == 2
+        assert llamados[0][:2] == ("AAPL", "5m")
+        assert llamados[1][:2] == ("AAPL", "15m")
+
+    asyncio.run(body())
+
+
+def test_despachar_eventos_3bp_es_no_op_sin_callback():
+    async def body():
+        from trading_scanner.engine.pattern_3bp import Estado3BP, EventoPatron3BP
+
+        async def on_evento(ticker: str):
+            pass
+
+        cache = _cache_con_ticker("AAPL")
+        evento = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=datetime(2026, 1, 2, 9, 35), tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
+        cache._eventos_3bp_pendientes = [("AAPL", "5m", evento)]
+
+        mgr = MockStreamManager(cache, on_evento)  # on_evento_3bp=None (default)
+        mgr._despachar_eventos_3bp()
+
+        # sin callback, no se drena — no hay a quién avisar
+        assert cache._eventos_3bp_pendientes == [("AAPL", "5m", evento)]
+
+    asyncio.run(body())

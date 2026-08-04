@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Awaitable, Callable, Optional
 
 from ..config import settings
+from ..engine.pattern_3bp import EventoPatron3BP
 from ..logging_setup import console
 from .market_data_cache import MarketDataCache, Vela
 from .mock_schwab import _seed
@@ -36,14 +37,21 @@ BACKOFF_MAX_S = 60.0
 BACKOFF_JITTER = 0.2
 
 OnEventoSignificativo = Callable[[str], Awaitable[None]]
+OnEvento3BP = Callable[[str, str, EventoPatron3BP], Awaitable[None]]
 
 
 class BaseStreamManager(ABC):
     _modo: str = "REAL"
 
-    def __init__(self, cache: MarketDataCache, on_evento: OnEventoSignificativo):
+    def __init__(
+        self,
+        cache: MarketDataCache,
+        on_evento: OnEventoSignificativo,
+        on_evento_3bp: Optional[OnEvento3BP] = None,
+    ):
         self._cache = cache
         self._on_evento = on_evento
+        self._on_evento_3bp = on_evento_3bp
         self._conectado = False
         self._ultimo_tick_en: Optional[datetime] = None
         self._intentos_reconexion = 0
@@ -72,6 +80,19 @@ class BaseStreamManager(ABC):
     def _despachar_si_evento(self, ticker: str, evento: bool) -> None:
         if evento:
             asyncio.create_task(self._on_evento(ticker))
+
+    def _despachar_eventos_3bp(self) -> None:
+        """Drena la cola de eventos ENTRADA de 3BP/4BP acumulados en el
+        cache (ver market_data_cache.py::drenar_eventos_3bp) y agenda su
+        persistencia — mismo patrón que _despachar_si_evento
+        (asyncio.create_task, nunca inline, para no bloquear
+        handle_message()). No-op si no se pasó on_evento_3bp al
+        construir el manager (opcional — el módulo 3BP puede correr sin
+        persistencia en vivo, ej. en tests)."""
+        if self._on_evento_3bp is None:
+            return
+        for ticker, timeframe, evento in self._cache.drenar_eventos_3bp():
+            asyncio.create_task(self._on_evento_3bp(ticker, timeframe, evento))
 
 
 class StreamManager(BaseStreamManager):
@@ -134,6 +155,7 @@ class StreamManager(BaseStreamManager):
             )
             evento = self._cache.actualizar_vela_1m(ticker, vela)
             self._despachar_si_evento(ticker, evento)
+            self._despachar_eventos_3bp()
 
     async def start(self, tickers: list[str]) -> None:
         self._stop_solicitado = False
@@ -210,8 +232,9 @@ class MockStreamManager(BaseStreamManager):
         on_evento: OnEventoSignificativo,
         intervalo_tick_s: float = 1.0,
         intervalo_vela_s: float = 5.0,
+        on_evento_3bp: Optional[OnEvento3BP] = None,
     ):
-        super().__init__(cache, on_evento)
+        super().__init__(cache, on_evento, on_evento_3bp)
         self._intervalo_tick_s = intervalo_tick_s
         self._intervalo_vela_s = intervalo_vela_s
         self._tasks: dict[str, asyncio.Task] = {}
@@ -276,6 +299,7 @@ class MockStreamManager(BaseStreamManager):
                 if minuto_actual % max(1, int(self._intervalo_vela_s / self._intervalo_tick_s)) == 0:
                     evento_vela = self._cache.actualizar_vela_1m(ticker, vela_1m_acumulada)
                     self._despachar_si_evento(ticker, evento_vela)
+                    self._despachar_eventos_3bp()
                     vela_1m_acumulada = None
         except asyncio.CancelledError:
             return
@@ -287,7 +311,11 @@ class MockStreamManager(BaseStreamManager):
         self._conectado = False
 
 
-def crear_stream_manager(cache: MarketDataCache, on_evento: OnEventoSignificativo) -> BaseStreamManager:
+def crear_stream_manager(
+    cache: MarketDataCache,
+    on_evento: OnEventoSignificativo,
+    on_evento_3bp: Optional[OnEvento3BP] = None,
+) -> BaseStreamManager:
     if settings.mock_schwab:
-        return MockStreamManager(cache, on_evento)
-    return StreamManager(cache, on_evento)
+        return MockStreamManager(cache, on_evento, on_evento_3bp=on_evento_3bp)
+    return StreamManager(cache, on_evento, on_evento_3bp)

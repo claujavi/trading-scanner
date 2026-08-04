@@ -140,3 +140,54 @@ def test_wireo_detecta_barra1_wrb_en_vivo_sobre_5m():
     assert ticker_cache.ultimo_evento_3bp_5m is not None
     assert ticker_cache.ultimo_evento_3bp_5m.estado == Estado3BP.POSIBLE
     assert ticker_cache.detector_3bp_5m.estado == Estado3BP.POSIBLE
+    assert cache.drenar_eventos_3bp() == []  # POSIBLE no encola — solo ENTRADA
+
+
+# ── Cola de eventos ENTRADA (persistencia en vivo, ver main.py::_on_evento_3bp) ──
+
+
+def test_drenar_eventos_3bp_devuelve_y_vacia_la_cola():
+    from src.trading_scanner.engine.pattern_3bp import EventoPatron3BP
+
+    config = ScanConfig()
+    cache = _seed_cache(config)
+    evento = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=_BASE, tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
+    cache._eventos_3bp_pendientes = [("AAPL", "5m", evento)]
+
+    drenados = cache.drenar_eventos_3bp()
+
+    assert drenados == [("AAPL", "5m", evento)]
+    assert cache.drenar_eventos_3bp() == []  # ya vacía
+
+
+def test_procesar_3bp_encola_solo_en_entrada_no_en_otros_estados():
+    """Aísla la lógica nueva (encolar en ENTRADA) del cálculo del patrón en
+    sí (ya cubierto en tests/unit/test_pattern_3bp.py) — se reemplaza
+    procesar_barra por un doble canneado para cada estado posible."""
+    from src.trading_scanner.engine.pattern_3bp import EventoPatron3BP
+
+    for estado, debe_encolar in (
+        (Estado3BP.POSIBLE, False),
+        (Estado3BP.ESPERANDO_ENTRADA, False),
+        (Estado3BP.SIN_PATRON, False),
+        (Estado3BP.ENTRADA, True),
+    ):
+        config = ScanConfig()
+        cache = _seed_cache(config)
+        ticker_cache = cache.get("AAPL")
+        evento_cann = EventoPatron3BP(estado=estado, timestamp=_BASE, tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
+        ticker_cache.detector_3bp_5m.procesar_barra = lambda *a, **k: evento_cann
+
+        # 3 ticks en ventanas distintas: la 1ra vela cerrada (30-34) es puro
+        # contexto — _atr14_de_velas exige >= 2 velas cerradas, así que
+        # procesar_barra recién se llama al cerrar la 2da (35-39), con la
+        # 1ra ya en el contexto (mismo umbral que en vivo/el walker).
+        cache.actualizar_vela_1m("AAPL", _tick(30, 100.0, 100.1, 99.9, 100.0))
+        cache.actualizar_vela_1m("AAPL", _tick(35, 100.0, 100.1, 99.9, 100.0))
+        cache.actualizar_vela_1m("AAPL", _tick(40, 100.0, 100.1, 99.9, 100.0))
+
+        pendientes = cache.drenar_eventos_3bp()
+        if debe_encolar:
+            assert len(pendientes) == 1 and pendientes[0][2] is evento_cann, estado
+        else:
+            assert pendientes == [], estado

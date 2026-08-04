@@ -117,6 +117,8 @@ class TursoClient:
             (self.DDL_BACKTEST_RUNS, None),
             (self.DDL_HISTORY_CACHE_META, None),
             (self.DDL_TICKERS_SIN_HISTORIAL, None),
+            (self.DDL_BP34_EVENTOS, None),
+            (self.DDL_BP34_BACKTEST_RUNS, None),
             ("ALTER TABLE scan_results ADD COLUMN estructura_pivotes TEXT", None),
             ("ALTER TABLE scan_results ADD COLUMN ema200_diaria REAL", None),
         ]
@@ -381,6 +383,101 @@ class TursoClient:
         return await self._execute("SELECT * FROM tickers_sin_historial")
 
     # ────────────────────────────────────────────────────────────────────────
+    # MÓDULO 3BP/4BP — señal de timing paralela, tablas propias, ver
+    # docs/spec_modulo_3bp_4bp.md. Nunca mezclado con scan_results/backtest_runs.
+    # ────────────────────────────────────────────────────────────────────────
+
+    async def insert_bp34_evento(self, evento: "Bp34Evento") -> int:
+        """Inserta un evento 3BP/4BP (vivo o backtest). Retorna el ID."""
+        sql = """
+        INSERT INTO bp34_eventos (
+            ticker, timeframe, fecha, timestamp, fuente, tipo, tier,
+            entry, stop, target, resultado, resultado_r, mfe_r, mae_r,
+            tiempo_en_trade_minutos, config_snapshot, created_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """
+        params = [
+            evento.ticker,
+            evento.timeframe,
+            evento.fecha.isoformat(),
+            evento.timestamp.isoformat(),
+            evento.fuente.value,
+            evento.tipo,
+            evento.tier,
+            evento.entry,
+            evento.stop,
+            evento.target,
+            evento.resultado.value,
+            evento.resultado_r,
+            evento.mfe_r,
+            evento.mae_r,
+            evento.tiempo_en_trade_minutos,
+            json.dumps(evento.config_snapshot, default=str),
+            evento.created_at.isoformat(),
+        ]
+        await self._execute(sql, params)
+        rows = await self._execute("SELECT last_insert_rowid() as id")
+        return rows[0]["id"] if rows else 0
+
+    async def get_bp34_eventos(
+        self, ticker: Optional[str] = None, timeframe: Optional[str] = None, limit: int = 100
+    ) -> list[dict]:
+        """Eventos 3BP/4BP más recientes, filtrables por ticker/timeframe —
+        usado por la página /patrones-3bp."""
+        condiciones = []
+        params: list[Any] = []
+        if ticker:
+            condiciones.append("ticker = ?")
+            params.append(ticker.upper())
+        if timeframe:
+            condiciones.append("timeframe = ?")
+            params.append(timeframe)
+        where = f"WHERE {' AND '.join(condiciones)}" if condiciones else ""
+        sql = f"SELECT * FROM bp34_eventos {where} ORDER BY timestamp DESC LIMIT ?"
+        params.append(limit)
+        return await self._execute(sql, params)
+
+    async def insert_bp34_backtest_run(self, backtest: dict) -> int:
+        """Inserta un resultado de backtest del módulo 3BP/4BP. Retorna el ID."""
+        sql = """
+        INSERT INTO bp34_backtest_runs (
+            config_snapshot, timeframe, fecha_inicio, fecha_fin, tickers,
+            total_eventos, total_entradas, win_rate, win_rate_confirmado,
+            win_rate_sin_confirmar, rr_promedio, profit_factor,
+            señales_target, señales_stop, señales_sin_definir, created_at
+        ) VALUES (
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+        )
+        """
+        params = [
+            json.dumps(backtest.get("config_snapshot", {}), default=str),
+            backtest.get("timeframe"),
+            backtest.get("fecha_inicio"),
+            backtest.get("fecha_fin"),
+            json.dumps(backtest.get("tickers", [])),
+            backtest.get("total_eventos", 0),
+            backtest.get("total_entradas", 0),
+            backtest.get("win_rate", 0.0),
+            backtest.get("win_rate_confirmado", 0.0),
+            backtest.get("win_rate_sin_confirmar", 0.0),
+            backtest.get("rr_promedio", 0.0),
+            backtest.get("profit_factor", 0.0),
+            backtest.get("señales_target", 0),
+            backtest.get("señales_stop", 0),
+            backtest.get("señales_sin_definir", 0),
+            datetime.utcnow().isoformat(),
+        ]
+        await self._execute(sql, params)
+        rows = await self._execute("SELECT last_insert_rowid() as id")
+        return rows[0]["id"] if rows else 0
+
+    async def get_latest_bp34_backtest_runs(self, limit: int = 10) -> list[dict]:
+        sql = "SELECT * FROM bp34_backtest_runs ORDER BY created_at DESC LIMIT ?"
+        return await self._execute(sql, [limit])
+
+    # ────────────────────────────────────────────────────────────────────────
     # DDL - SCHEMAS
     # ────────────────────────────────────────────────────────────────────────
 
@@ -506,6 +603,51 @@ class TursoClient:
         motivo TEXT NOT NULL,
         verificado_en TEXT NOT NULL,
         UNIQUE(ticker, timeframe)
+    )
+    """
+
+    DDL_BP34_EVENTOS = """
+    CREATE TABLE IF NOT EXISTS bp34_eventos (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        ticker TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        fecha TEXT NOT NULL,
+        timestamp TEXT NOT NULL,
+        fuente TEXT NOT NULL,
+        tipo TEXT NOT NULL,
+        tier TEXT NOT NULL,
+        entry REAL NOT NULL,
+        stop REAL NOT NULL,
+        target REAL NOT NULL,
+        resultado TEXT DEFAULT 'ABIERTO',
+        resultado_r REAL,
+        mfe_r REAL,
+        mae_r REAL,
+        tiempo_en_trade_minutos INTEGER,
+        config_snapshot TEXT NOT NULL,
+        created_at TEXT NOT NULL
+    )
+    """
+
+    DDL_BP34_BACKTEST_RUNS = """
+    CREATE TABLE IF NOT EXISTS bp34_backtest_runs (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        config_snapshot TEXT NOT NULL,
+        timeframe TEXT NOT NULL,
+        fecha_inicio TEXT NOT NULL,
+        fecha_fin TEXT NOT NULL,
+        tickers TEXT NOT NULL,
+        total_eventos INTEGER DEFAULT 0,
+        total_entradas INTEGER DEFAULT 0,
+        win_rate REAL DEFAULT 0.0,
+        win_rate_confirmado REAL DEFAULT 0.0,
+        win_rate_sin_confirmar REAL DEFAULT 0.0,
+        rr_promedio REAL DEFAULT 0.0,
+        profit_factor REAL DEFAULT 0.0,
+        señales_target INTEGER DEFAULT 0,
+        señales_stop INTEGER DEFAULT 0,
+        señales_sin_definir INTEGER DEFAULT 0,
+        created_at TEXT NOT NULL
     )
     """
 

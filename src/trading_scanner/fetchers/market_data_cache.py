@@ -28,7 +28,7 @@ from typing import Optional
 import polars as pl
 
 from ..engine.evaluator import DatosTickerCompletos
-from ..engine.pattern_3bp import Detector3BP, EventoPatron3BP, VelaPattern
+from ..engine.pattern_3bp import Detector3BP, Estado3BP, EventoPatron3BP, VelaPattern
 from ..fetchers.calendar_client import CalendarWarning
 from ..indicators.trend import detect_cruce_ema
 from ..indicators.volume import calc_atr
@@ -236,6 +236,21 @@ class MarketDataCache:
     def __init__(self, config: ScanConfig):
         self._config = config
         self._tickers: dict[str, TickerCache] = {}
+        # Eventos ENTRADA del módulo 3BP/4BP pendientes de persistir — ver
+        # docs/spec_modulo_3bp_4bp.md sección 6 ("modo shadow"). Separado del
+        # `evento` booleano que dispara la reevaluación del clasificador de 6
+        # criterios (spec: "no se cruza con la clasificación DAY/SWING") —
+        # este caché es su propia cola, drenada por el stream manager
+        # (schwab_stream.py::_despachar_eventos_3bp) para persistir sin
+        # bloquear el hot path síncrono de actualizar_vela_1m().
+        self._eventos_3bp_pendientes: list[tuple[str, str, EventoPatron3BP]] = []
+
+    def drenar_eventos_3bp(self) -> list[tuple[str, str, EventoPatron3BP]]:
+        """Devuelve y vacía la cola de eventos ENTRADA de 3BP/4BP
+        acumulados desde el último drenaje — (ticker, timeframe, evento)."""
+        eventos = self._eventos_3bp_pendientes
+        self._eventos_3bp_pendientes = []
+        return eventos
 
     def tiene(self, ticker: str) -> bool:
         return ticker in self._tickers
@@ -403,6 +418,8 @@ class MarketDataCache:
                 cache.ultimo_evento_3bp_5m = evento
             else:
                 cache.ultimo_evento_3bp_15m = evento
+            if evento.estado == Estado3BP.ENTRADA:
+                self._eventos_3bp_pendientes.append((cache.ticker, timeframe, evento))
 
     def snapshot(self, ticker: str) -> Optional[DatosTickerCompletos]:
         cache = self._tickers.get(ticker)

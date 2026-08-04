@@ -1,0 +1,135 @@
+{% extends "base.html" %}
+{% block title %}3BP/4BP — Trading Scanner{% endblock %}
+{% block content %}
+
+<div style="max-width:1000px;">
+
+  <div class="section-header">
+    <div class="section-title">Módulo 3BP/4BP</div>
+  </div>
+
+  <div class="form-hint" style="margin-bottom:16px;">
+    Señal de timing paralela al clasificador de 6 criterios — no se mezcla con el score
+    DAY/SWING. Ver <code>docs/spec_modulo_3bp_4bp.md</code>.
+  </div>
+
+  {% if error %}
+  <div class="card" style="border-color:var(--red);">
+    <div class="card-title" style="color:var(--red);">Error</div>
+    <p style="font-size:13px;">{{ error }}</p>
+  </div>
+  {% endif %}
+
+  <div class="card">
+    <div class="card-title">Nuevo backtest</div>
+    <form action="/patrones-3bp/run" method="post">
+      <div class="form-group">
+        <label>Tickers (separados por coma, espacio o salto de línea)</label>
+        <textarea name="tickers" rows="3" style="width:100%;background:var(--bg3);border:1px solid var(--border);border-radius:var(--radius);color:var(--text);padding:8px 12px;font-size:13px;font-family:'Consolas',monospace;" placeholder="AUR, QTTB, ELVA, BMNR, CLSK"></textarea>
+      </div>
+      <div class="form-group">
+        <label>Timeframe</label>
+        <select name="timeframe">
+          <option value="5m">5m</option>
+          <option value="15m">15m</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Fecha inicio</label>
+        <input type="date" name="fecha_inicio" required />
+      </div>
+      <div class="form-group">
+        <label>Fecha fin</label>
+        <input type="date" name="fecha_fin" required />
+      </div>
+      <div class="form-hint" style="margin-bottom:16px;">
+        Usa la config activa (los campos <code>bp34_*</code> de <code>/config</code>). 5m y 15m
+        corren como corridas separadas — no se calibran juntos. Limitado a la profundidad real de
+        intradía de Schwab (~desde noviembre 2025).
+      </div>
+      <button type="submit" class="btn btn-primary">Correr backtest</button>
+    </form>
+  </div>
+
+  {% if runs %}
+  <div class="card">
+    <div class="card-title">Backtests recientes</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha corrida (NY)</th>
+          <th>Timeframe</th>
+          <th>Rango</th>
+          <th>Tickers</th>
+          <th>Entradas</th>
+          <th>Win rate</th>
+          <th>Win rate confirmado</th>
+          <th>R prom.</th>
+          <th>Profit factor</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for r in runs %}
+        <tr>
+          <td class="mono">{{ r.created_at | to_ny }}</td>
+          <td class="mono">{{ r.timeframe }}</td>
+          <td class="mono">{{ r.fecha_inicio }} → {{ r.fecha_fin }}</td>
+          <td>{{ r.tickers | length }} tickers</td>
+          <td class="mono">{{ r.total_entradas }}</td>
+          <td class="mono">{{ "%.1f"|format(r.win_rate) }}%</td>
+          <td class="mono">{{ "%.1f"|format(r.win_rate_confirmado) }}%</td>
+          <td class="mono">{{ "%.2f"|format(r.rr_promedio) }}</td>
+          <td class="mono">{{ "%.2f"|format(r.profit_factor) }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% endif %}
+
+  {% if eventos %}
+  <div class="card">
+    <div class="card-title">Eventos recientes (vivo + backtest)</div>
+    <table>
+      <thead>
+        <tr>
+          <th>Fecha (NY)</th>
+          <th>Ticker</th>
+          <th>TF</th>
+          <th>Fuente</th>
+          <th>Tipo</th>
+          <th>Tier</th>
+          <th>Entry</th>
+          <th>Stop</th>
+          <th>Target</th>
+          <th>Resultado</th>
+          <th>R</th>
+        </tr>
+      </thead>
+      <tbody>
+        {% for e in eventos %}
+        <tr>
+          <td class="mono">{{ e.timestamp | to_ny }}</td>
+          <td>{{ e.ticker }}</td>
+          <td class="mono">{{ e.timeframe }}</td>
+          <td class="mono">{{ e.fuente.value }}</td>
+          <td class="mono">{{ e.tipo }}</td>
+          <td class="mono">{{ e.tier }}</td>
+          <td class="mono">{{ "%.2f"|format(e.entry) }}</td>
+          <td class="mono">{{ "%.2f"|format(e.stop) }}</td>
+          <td class="mono">{{ "%.2f"|format(e.target) }}</td>
+          <td class="mono">{{ e.resultado.value }}</td>
+          <td class="mono">{{ "%.2f"|format(e.resultado_r) if e.resultado_r is not none else "—" }}</td>
+        </tr>
+        {% endfor %}
+      </tbody>
+    </table>
+  </div>
+  {% else %}
+  <div class="card">
+    <div class="form-hint">Todavía no hay eventos 3BP/4BP registrados — ni en vivo ni de backtest.</div>
+  </div>
+  {% endif %}
+
+</div>
+{% endblock %}

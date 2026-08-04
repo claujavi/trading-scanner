@@ -27,6 +27,7 @@ from fastapi.templating import Jinja2Templates
 from .api.backtest import router as backtest_router
 from .api.config import router as config_router
 from .api.optimize import router as optimize_router
+from .api.patrones_3bp import router as patrones_3bp_router
 from .api.scan import _dedupe_latest_por_ticker
 from .api.scan import router as scan_router
 from .api.schwab import router as schwab_router
@@ -41,6 +42,7 @@ from .fetchers.schwab_stream import crear_stream_manager
 from .ingest.csv_parser import parse_csv
 from .ingest.csv_watcher import CSVWatcher
 from .logging_setup import console
+from .models import Bp34Evento, FuenteDatos
 
 _PROJECT_ROOT = Path(__file__).parent.parent.parent
 _TEMPLATES_DIR = _PROJECT_ROOT / "templates"
@@ -120,6 +122,41 @@ async def lifespan(app: FastAPI):
                 cache_ticker.ultima_clasificacion = result.clasificacion
             cache_ticker.ultima_evaluacion = datetime.utcnow()
 
+    async def _on_evento_3bp(ticker: str, timeframe: str, evento) -> None:
+        """Persiste un evento ENTRADA del módulo 3BP/4BP en vivo — cierra
+        el gap documentado en docs/spec_modulo_3bp_4bp.md sección 6 (modo
+        shadow): antes de esto, el evento solo vivía en memoria
+        (TickerCache.ultimo_evento_3bp_5m/_15m), sin persistirse ni
+        mostrarse en ningún lado. MVP deliberado: solo registra la entrada
+        (fuente=LIVE, resultado=ABIERTO) — el seguimiento del resultado
+        real (tocó target/stop) todavía no está implementado en vivo, a
+        diferencia del backtest (walker_3bp.py, que sí sigue el precio
+        histórico post-señal). Nunca bloquea ni rompe el stream: cualquier
+        error de persistencia se loguea y se descarta."""
+        try:
+            config = await get_active_config()
+            target_r = getattr(config, f"bp34_target_r_{timeframe}")
+            evento_bp34 = Bp34Evento(
+                ticker=ticker,
+                timeframe=timeframe,
+                fecha=date.today(),
+                timestamp=evento.timestamp,
+                fuente=FuenteDatos.LIVE,
+                tipo=evento.tipo,
+                tier=evento.tier,
+                entry=evento.entry,
+                stop=evento.stop,
+                target=evento.entry + (evento.entry - evento.stop) * target_r,
+                config_snapshot=config.model_dump(mode="json"),
+            )
+            await db.insert_bp34_evento(evento_bp34)
+            console.log(
+                f"[cyan]3BP: {ticker} ({timeframe}) entrada {evento.tipo} "
+                f"tier={evento.tier} entry={evento.entry:.2f} stop={evento.stop:.2f}[/cyan]"
+            )
+        except Exception as exc:
+            console.log(f"[red]Error persistiendo evento 3BP de {ticker}: {exc}[/red]")
+
     async def _procesar_y_conectar_stream(tickers):
         """Corre el pipeline pre-market (sembrando el cache) y arranca o
         extiende el stream — compartido por el CSV watcher (tickers nuevos
@@ -135,7 +172,7 @@ async def lifespan(app: FastAPI):
         nombres = [t.ticker for t in tickers]
         if app.state.stream_manager is None:
             app.state.stream_manager = crear_stream_manager(
-                app.state.market_cache, _on_evento_significativo
+                app.state.market_cache, _on_evento_significativo, _on_evento_3bp
             )
             await app.state.stream_manager.start(nombres)
         else:
@@ -200,6 +237,7 @@ app.include_router(config_router)
 app.include_router(backtest_router)
 app.include_router(stream_router)
 app.include_router(optimize_router)
+app.include_router(patrones_3bp_router)
 
 
 # ── Dashboard ─────────────────────────────────────────────────────────────
