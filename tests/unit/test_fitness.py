@@ -71,3 +71,27 @@ def test_profit_factor_tope_evita_que_un_outlier_domine():
     normal = calcular_fitness(_metrics(profit_factor=5.0), config)
     outlier = calcular_fitness(_metrics(profit_factor=500.0), config)
     assert normal == outlier
+
+
+def test_max_drawdown_tope_evita_que_estrategias_de_alta_frecuencia_lo_dominen():
+    """Hallazgo real (2026-08-06): calibrando 3BP/4BP (cientos-miles de
+    trades por corrida, a diferencia de los ~15-30 del clasificador de 6
+    criterios) max_drawdown_r es una SUMA sobre toda la serie -> crece sin
+    límite con más trades y ahoga a expectancy/profit_factor (que sí son
+    tasas). Sin el cap, un drawdown de 34 vs uno de 15 seguiría
+    diferenciando fitness aunque ambos ya sean "claramente malos" — con el
+    cap, ambos empatan en el peor score posible."""
+    config = FitnessConfig(max_drawdown_tope=15.0)
+    en_el_tope = calcular_fitness(_metrics(max_drawdown_r=15.0), config)
+    muy_por_encima = calcular_fitness(_metrics(max_drawdown_r=34.3), config)
+    assert en_el_tope == muy_por_encima
+
+
+def test_max_drawdown_tope_no_afecta_drawdowns_normales_del_clasificador():
+    """El default (15.0) es deliberadamente generoso — no debe cambiar el
+    comportamiento para el rango de drawdown que ya se observó en el
+    clasificador de 6 criterios (hasta ahora, nunca superó ~2R)."""
+    config = FitnessConfig()
+    bajo_dd = calcular_fitness(_metrics(max_drawdown_r=1.0), config)
+    alto_dd = calcular_fitness(_metrics(max_drawdown_r=2.0), config)
+    assert bajo_dd > alto_dd  # sigue discriminando normalmente, sin tocar el tope

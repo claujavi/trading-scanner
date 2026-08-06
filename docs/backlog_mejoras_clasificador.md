@@ -251,6 +251,69 @@ stream/backtest, tiene sentido revisarlas en la misma pasada en vez de por separ
 
 ---
 
+## Prioridad 6 — Reset explícito de "inicio de día" para el stream
+
+**Encontrado (2026-08-05):** el servidor no resetea nada a la medianoche ni al cambiar el día de
+trading. Si el proceso sigue corriendo de un día para el otro sin reiniciarse (ej. se dejó
+prendido de la sesión anterior), el `StreamManager` sigue suscripto a los tickers del CSV de
+**ayer**, y cualquier evento significativo del stream (cruce de VWAP, cambio de categoría de
+RelVol) los reevalúa y persiste con `fecha=date.today()` — **hoy**, aunque no haya llegado ningún
+CSV nuevo. Resultado concreto: el dashboard mostraba tickers "de hoy" que en realidad eran el
+arrastre de la suscripción del día anterior, sin ningún scan nuevo de por medio. Confirmado en
+Turso: filas con `fuente=LIVE` y `fecha` de hoy, timestamps de esta mañana, para tickers que
+nunca aparecieron en un CSV de hoy.
+
+**Por qué no es (todavía) un problema real:** el flujo normal del trader es correr `iniciar.bat`
+cada mañana antes de que llegue el CSV — eso reinicia el proceso, vacía `MarketDataCache` en
+memoria, y el stream arranca limpio recién con la suscripción del día. Esto solo se manifestó
+porque se dejó el servidor de desarrollo corriendo dos días seguidos para testear (sesión de
+trabajo, no uso real).
+
+**Idea para más adelante:** un reset explícito de "inicio de día" — al detectar que cambió la
+fecha de trading NY (o al mediodía sin CSV nuevo aún) desuscribir/limpiar el cache de tickers que
+no vinieron de un CSV de la sesión actual, en vez de depender exclusivamente de que el proceso se
+reinicie a mano. No calibrado, no priorizado — anotado para no perderlo.
+
+**Status:** identificado, no implementado. Mitigación actual: reiniciar el servidor antes de subir
+el CSV de cada día.
+
+---
+
+## Prioridad 7 — `max_drawdown_r` dominaba el fitness con estrategias de alto volumen de trades ✅ corregido
+
+**Encontrado (2026-08-06), calibrando el módulo 3BP/4BP con Optuna:** los 50 trials de la primera
+ronda de calibración (15m, subconjunto de 50 tickers) dieron **fitness negativo en los 50**,
+incluido el "ganador". Causa: `optimizer/fitness.py::calcular_fitness()` resta
+`peso_drawdown × max_drawdown_r` del score — pero `max_drawdown_r` es una **suma** (caída
+acumulada sobre toda la serie de trades tratada como una sola curva secuencial), no una tasa como
+`expectancy_r` o `profit_factor`. Con el clasificador de 6 criterios (~15-30 trades por corrida)
+eso nunca fue un problema (drawdown observado hasta ahora, máximo ~2R). Con 3BP (cientos a miles
+de trades por corrida — la validación contra el universo completo dio 5.037 trades), la suma se
+disparó a **34.3R**, ahogando por completo la contribución de expectancy/profit_factor. Efecto
+concreto confirmado comparando trials a mano: el trial 18 (728 trades, expectancy 0.209) tenía
+*mejor* expectancy que el trial "ganador" 33/34 (689 trades, expectancy 0.177) pero perdió por
+tener apenas más drawdown acumulado — el optimizador estaba premiando "menos señales" en vez de
+"mejor señal por trade", sin que nadie lo hubiera pedido.
+
+**Fix:** `FitnessConfig` gana `max_drawdown_tope` (mismo patrón ya usado para `profit_factor_tope`
+— acotar outliers, no cambiar la fórmula). Default `15.0`, deliberadamente generoso: no debe
+activarse en el rango de drawdown ya observado en el clasificador de 6 criterios, solo entra en
+juego con volúmenes de trades mucho más altos como 3BP. `calcular_fitness()` usa
+`min(metrics.max_drawdown_r, config.max_drawdown_tope)` antes de aplicar el peso. 2 tests nuevos en
+`tests/unit/test_fitness.py` — confirma que dos drawdowns muy por encima del tope empatan en el
+peor score, y que el comportamiento para drawdowns normales (1-2R) no cambió. Suite completa: 223
+tests, 0 fallos.
+
+**No afecta la config ya guardada del clasificador de 6 criterios** (`curado_v4_swing_stop_acotado`,
+guardada 2026-08-05) — su drawdown real (2.00R) queda muy por debajo del tope nuevo, mismo
+resultado con o sin el fix.
+
+**Status:** corregido. Pendiente: repetir la ronda 1 de calibración de 3BP/15m con el fitness
+arreglado — el resultado anterior (`docs/spec_modulo_3bp_4bp.md`, si se documenta ahí) queda
+marcado como calculado con la fórmula vieja, no confiable para elegir parámetros finales.
+
+---
+
 ## Notas
 
 - Los puntos 1 y 2 ya están codeados (ver status de cada uno arriba) — 1 con el gap de backtest
