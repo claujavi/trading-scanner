@@ -1,9 +1,11 @@
+import asyncio
 from datetime import date, datetime
 
 import pytest
 
-from src.trading_scanner.backtest.metrics_3bp import calcular_metricas_3bp
-from src.trading_scanner.models import Bp34Evento, FuenteDatos, ResultadoBp34
+from src.trading_scanner.backtest import metrics_3bp
+from src.trading_scanner.backtest.metrics_3bp import calcular_metricas_3bp, recolectar_eventos_3bp
+from src.trading_scanner.models import Bp34Evento, FuenteDatos, ResultadoBp34, ScanConfig
 
 
 def _evento(resultado_r: float, tier: str = "confirmado", resultado: ResultadoBp34 = ResultadoBp34.TARGET) -> Bp34Evento:
@@ -70,3 +72,31 @@ def test_calcular_metricas_filtra_eventos_sin_resolver():
     m = calcular_metricas_3bp(eventos)
     assert m["total_eventos"] == 2
     assert m["total_entradas"] == 1
+
+
+def test_recolectar_eventos_ordena_por_timestamp_entre_tickers(monkeypatch):
+    """asyncio.gather aplana por ticker (orden de la lista `tickers`, alfabético
+    en la práctica), no por fecha real. Sin ordenar por timestamp acá, cualquier
+    cálculo que trate la lista como una curva de capital secuencial (ej.
+    _max_drawdown_r) recorrería primero todo el historial de un ticker y
+    después el del siguiente — una racha perdedora artificial. Ver hallazgo de
+    la calibración 2026-08-24 (drawdown inflado a 47R sobre 6923 trades)."""
+    eventos_por_ticker = {
+        "AAPL": [_evento(1.0).model_copy(update={"ticker": "AAPL", "timestamp": datetime(2026, 3, 1, 9, 35)})],
+        "MSFT": [_evento(1.0).model_copy(update={"ticker": "MSFT", "timestamp": datetime(2026, 1, 5, 9, 35)})],
+        "ZZZ": [_evento(1.0).model_copy(update={"ticker": "ZZZ", "timestamp": datetime(2026, 2, 15, 9, 35)})],
+    }
+
+    async def _caminar_falso(ticker, timeframe, fecha_inicio, fecha_fin, config):
+        return eventos_por_ticker[ticker]
+
+    monkeypatch.setattr(metrics_3bp, "caminar_3bp", _caminar_falso)
+
+    eventos = asyncio.run(
+        recolectar_eventos_3bp(
+            ["AAPL", "MSFT", "ZZZ"], "5m", date(2026, 1, 1), date(2026, 3, 31), ScanConfig()
+        )
+    )
+
+    assert [e.ticker for e in eventos] == ["MSFT", "ZZZ", "AAPL"]
+    assert [e.timestamp for e in eventos] == sorted(e.timestamp for e in eventos)

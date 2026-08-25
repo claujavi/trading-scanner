@@ -46,6 +46,16 @@ class FitnessConfig(BaseModel):
     # drawdown observado hasta ahora nunca superó ~2R), solo entra en
     # juego con volúmenes de trades mucho más altos.
     max_drawdown_tope: float = Field(15.0, gt=0)
+    # peso_drawdown se puede llevar a 0 para anular esta penalización por
+    # completo. Necesario cuando no hay un límite de posiciones simultáneas
+    # ni modelo de capital detrás de los trades (ej. calibración de 3BP
+    # sobre 400+ tickers en paralelo, ver optimizer/cli_3bp.py): a diferencia
+    # de expectancy_r/profit_factor (agregados de conteo/suma, válidos sin
+    # importar el orden de los trades), max_drawdown_r es inherentemente
+    # secuencial — solo describe algo real si existe una única cuenta que
+    # efectivamente pudiera operar esos trades uno detrás del otro. Sin ese
+    # supuesto, ni con `max_drawdown_tope` alcanza: satura para prácticamente
+    # todos los trials por igual y deja de aportar señal de ranking.
     trades_objetivo: int = Field(30, gt=0)  # a partir de acá, el factor de confiabilidad ronda 1.0
     pendiente_penalizacion: float = Field(0.15, gt=0)  # qué tan abrupta es la curva por debajo del objetivo
 

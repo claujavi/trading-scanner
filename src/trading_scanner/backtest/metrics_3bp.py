@@ -33,7 +33,21 @@ async def recolectar_eventos_3bp(
     tickers: list[str], timeframe: str, fecha_inicio: date, fecha_fin: date, config: ScanConfig
 ) -> list[Bp34Evento]:
     """Corre el walker para varios tickers en paralelo (acotado por
-    _SCHWAB_CONCURRENCY) y aplana los resultados."""
+    _SCHWAB_CONCURRENCY) y aplana los resultados.
+
+    Ordenado por `timestamp` antes de devolver: cada tarea de `asyncio.gather`
+    ya viene en orden cronológico *dentro* de su propio ticker, pero entre
+    tickers quedan concatenados en el orden de la lista `tickers` (alfabético
+    en la práctica), no por fecha real. Sin este sort, cualquier cálculo que
+    trate la lista como una curva de capital secuencial (ver
+    `backtest/metrics.py::_max_drawdown_r`, reusada por
+    `calcular_metricas_3bp`/`calcular_metricas_estrategia`) recorrería
+    primero todo el historial de un ticker y después el del siguiente —una
+    "racha perdedora" artificial que ningún trader real experimentaría
+    operando 400+ tickers en simultáneo con los trades intercalados por
+    calendario. Confirmado en la calibración de 2026-08-24: infló
+    max_drawdown_r a 47R sobre 6923 trades, saturando por completo el tope
+    de la fórmula de fitness."""
     tareas = [_caminar_con_limite(t, timeframe, fecha_inicio, fecha_fin, config) for t in tickers]
     resultados = await asyncio.gather(*tareas, return_exceptions=True)
 
@@ -44,6 +58,7 @@ async def recolectar_eventos_3bp(
             errores += 1
         else:
             eventos.extend(item)
+    eventos.sort(key=lambda e: e.timestamp)
 
     console.log(
         f"[green]Walker 3BP: {len(eventos)} eventos"
