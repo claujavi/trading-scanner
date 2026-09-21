@@ -23,7 +23,7 @@ cuesta nada.
 """
 
 import asyncio
-from datetime import date
+from datetime import date, timedelta
 from pathlib import Path
 from typing import Optional
 
@@ -45,6 +45,15 @@ app = typer.Typer()
 optuna.logging.set_verbosity(optuna.logging.WARNING)
 
 _TIMEFRAMES_3BP = ("5m", "15m")
+
+
+def ultimo_dia_mes_cerrado(hoy: date) -> date:
+    """Último día del mes anterior a `hoy`. history_cache.get_history() cae a
+    Schwab en vivo si falta el parquet de cualquier mes del rango pedido, y el
+    mes en curso nunca está cerrado en cache (pipeline._actualizar_cache_historico
+    solo lo refresca para los tickers del CSV de ToS del día, no para los
+    ~400 de la calibración) — acotar fecha_fin acá mantiene la corrida 100% local."""
+    return hoy.replace(day=1) - timedelta(days=1)
 
 
 def _parse_tickers(raw: str) -> list[str]:
@@ -159,6 +168,17 @@ def run(
             console.log(f"[red]Sin rango cacheado para {timeframe} y no se pasó --fecha-inicio/--fecha-fin.[/red]")
             raise typer.Exit(code=1)
         d_inicio, d_fin = rango
+
+    tope = ultimo_dia_mes_cerrado(date.today())
+    if d_fin > tope:
+        console.log(
+            f"[yellow]fecha_fin {d_fin} cae en el mes en curso — se acota a {tope} "
+            f"(último mes cerrado) para no pegarle a Schwab en vivo.[/yellow]"
+        )
+        d_fin = tope
+    if d_inicio > d_fin:
+        console.log(f"[red]Rango vacío tras acotar al último mes cerrado ({d_inicio} > {d_fin}).[/red]")
+        raise typer.Exit(code=1)
 
     storage = None
     if study_name:
