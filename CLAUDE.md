@@ -99,6 +99,17 @@ Sprint 5 — Integración Fase 3 (ejecución via Schwab API) [ ] pendiente (futu
   dato (causa raíz de 0 señales SWING en el primer backtest de 1 mes). Se corrigió a lo que decía
   la especificación original: "capital limitado" es un **desempate** aplicado solo cuando
   `score_day == score_swing` tras evaluar los 6 criterios objetivos — ver Regla 6 más abajo.
+- **Criterio 5 (SMA200) y filtro de variación diaria mejorados (2026-07-31, commit 33f9a62,
+  `docs/backlog_mejoras_clasificador.md` Prioridades 1 y 2) — no estaban documentados acá hasta
+  ahora, se detectó la falta al revisar por qué el `config_snapshot` de un scan real traía campos
+  no listados en este archivo.** (1) `criterio_sma200` dejó de ser el bit binario `sobre_sma200` y
+  pasa a usar estructura de pivotes fractales (`engine/pivots.py`, campos `pivote_*` nuevos en
+  `ScanConfig`) — ver Regla 4 más abajo. Gap conocido: `backtest/runner.py` no lo vectorizó, así
+  que en backtest/optimizador este criterio queda siempre `None` (no calibra, tampoco penaliza).
+  (2) El filtro de entrada `variacion_diaria_min_pct` dejó de ser un umbral plano de 2% — ahora
+  escala por precio (`evaluator._umbral_variacion_diaria`, 3 campos nuevos en `ScanConfig`): una
+  acción de $6 tolera más % de gap que una de $200. Ninguno de los campos nuevos de ninguno de los
+  dos puntos lo toca el optimizador.
 - Página de Parámetros (`/config`) — formulario completo de `ScanConfig`, guarda en la tabla
   `scan_configs` de Turso; el pipeline usa `pipeline.get_active_config()` (última config guardada)
   en cada scan, no una copia fija al arrancar el servidor.
@@ -525,9 +536,28 @@ class ScanConfig(BaseModel):
     volumen_promedio_min: int = 500_000
     float_min: int = 10_000_000
     variacion_diaria_min_pct: float = 2.0
+    # variacion_diaria_min_pct NO se aplica plano — evaluator._umbral_variacion_diaria()
+    # lo escala por precio (backlog "Prioridad 2", implementado 2026-07-31, commit
+    # 33f9a62): el mismo % de gap es más significativo en una acción cara que en una
+    # barata. A precio == variacion_diaria_precio_referencia el umbral es
+    # variacion_diaria_min_pct tal cual; para otros precios escala por
+    # precio_referencia/precio, acotado entre escala_min y escala_max. Ejemplo con
+    # defaults: acción de $6 → umbral efectivo 5.0% (antes 2.0% plano); acción de
+    # $200 → umbral efectivo 1.0%. Ninguno de los 3 campos lo toca el optimizador
+    # (search_space.py no los referencia). Ver docs/backlog_mejoras_clasificador.md.
+    variacion_diaria_precio_referencia: float = 20.0
+    variacion_diaria_escala_min: float = 0.5
+    variacion_diaria_escala_max: float = 2.5
     relvol_min: float = 1.5
     atr_pct_min: float = 2.0
     spread_max_pct: float = 1.0  # spread bid/ask máximo, % del precio — solo se evalúa si el CSV trae Bid/Ask
+
+    # ── Estructura de pivotes (criterio 5 — reemplaza el bit binario sobre_sma200) ──
+    # backlog "Prioridad 1", implementado 2026-07-31, commit 33f9a62 — ver
+    # docs/spec_criterio_pivotes.md. Ninguno lo toca el optimizador.
+    pivote_ventana_l: int = 3              # barras a cada lado para confirmar un pivote fractal
+    pivote_tolerancia_atr: float = 0.5     # tolerancia de ruido, en múltiplos de ATR14
+    pivote_minimos_consecutivos: int = 2   # mínimo de pivotes consecutivos para no dar INDETERMINADA
 
     # ── Umbrales de los criterios objetivos ─────────────────────────────────
     relvol_umbral_day: float = 3.0          # criterio 3: RelVol > X → day
@@ -789,6 +819,16 @@ def criterio_relvol(relvol: float, config: ScanConfig) -> tuple[float, float]:
 def criterio_atr_pct(atr_pct: float, config: ScanConfig) -> tuple[float, float]:
     ...
 ```
+**Excepción de firma — criterio 5 (`criterio_sma200`):** desde el backlog "Prioridad 1"
+(implementado 2026-07-31, commit 33f9a62) ya no recibe un bit binario `sobre_sma200: bool`, sino
+`estructura_pivotes: Optional[str]` ("ALCISTA"/"BAJISTA"/`None`) calculada por
+`engine/pivots.py::detect_estructura_pivotes()` (pivotes fractales HPH/HPL vs LPH/LPL — ver
+`docs/spec_criterio_pivotes.md`). `None` (estructura mixta o datos insuficientes) es un criterio
+no calculable (Regla 2), no cae a ningún fallback binario. `sobre_sma200` se mantiene en
+`ScanResult` como campo informativo, ya no alimenta el score. **Gap conocido:** `backtest/runner.py`
+todavía no vectoriza este criterio (sigue el camino viejo `_serie_sobre_ma`/`_valor_asof`), así que
+en todo backtest/optimizador este criterio queda permanentemente `None` — no penaliza (Regla 2),
+pero tampoco calibra. Ver `docs/backlog_mejoras_clasificador.md`, "Prioridad 1.5".
 
 **Regla 5 — Umbral mínimo de criterios calculables:**
 ```
@@ -814,6 +854,11 @@ mínimo de `ScanConfig` (`precio_min/max`, `variacion_diaria_min_pct`, `atr_pct_
 ausencia de dato, solo por violación real de un dato que sí existe. Ejemplo real: un ADR de baja
 liquidez con spread bid/ask >2% del precio se descartaba igual con los 6 criterios "viendo bien"
 técnicamente — este gate existe específicamente para atrapar ese caso.
+
+**El filtro de `variacion_diaria_min_pct` no compara contra el 2.0% plano del default** — pasa por
+`evaluator._umbral_variacion_diaria(precio, config)`, que lo escala por precio (ver el bloque
+`ScanConfig` más arriba). Al leer un `FILTRO_ENTRADA:variacion_diaria` en el dashboard, el umbral
+real contra el que se comparó fue el escalado, no el campo `variacion_diaria_min_pct` tal cual.
 
 **Regla 6 — Clasificación por umbral relativo, con desempate por capital limitado:**
 ```
