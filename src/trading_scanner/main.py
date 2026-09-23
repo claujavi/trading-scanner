@@ -147,6 +147,7 @@ async def lifespan(app: FastAPI):
                 entry=evento.entry,
                 stop=evento.stop,
                 target=evento.entry + (evento.entry - evento.stop) * target_r,
+                barra1_wrb_ratio=evento.barra1_wrb_ratio,
                 config_snapshot=config.model_dump(mode="json"),
             )
             await db.insert_bp34_evento(evento_bp34)

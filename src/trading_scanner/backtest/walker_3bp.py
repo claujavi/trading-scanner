@@ -150,6 +150,7 @@ def _caminar_dia(
             mfe_r=mfe_r,
             mae_r=mae_r,
             tiempo_en_trade_minutos=tiempo,
+            barra1_wrb_ratio=evento.barra1_wrb_ratio,
             config_snapshot=config_snapshot,
         ))
     return eventos

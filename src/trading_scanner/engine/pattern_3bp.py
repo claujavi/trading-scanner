@@ -52,6 +52,14 @@ class EventoPatron3BP:
     entry: Optional[float] = None    # solo en ENTRADA
     stop: Optional[float] = None     # solo en ENTRADA
     tier: Optional[str] = None       # "confirmado" | "sin_confirmar" — solo en ENTRADA
+    barra1_wrb_ratio: Optional[float] = None
+    # (high-low de la barra 1) / ATR14 al momento en que se detectó como WRB
+    # — solo en ENTRADA. Por construcción siempre >= wrb_multiplicador (esa
+    # es la condición que la calificó como barra 1, ver _es_wrb_que_inicia),
+    # así que cuantifica CUÁNTO se pasó del umbral, no si lo pasó. Informativo
+    # para análisis de calidad de señal (ver docs/backlog_mejoras_clasificador.md
+    # y correlacion_3bp_calidad.py) — no participa de ninguna decisión del
+    # propio detector.
 
 
 @dataclass
@@ -71,6 +79,7 @@ class Detector3BP:
     estado: Estado3BP = Estado3BP.SIN_PATRON
     _rangos_previos: list[float] = field(default_factory=list)
     _barra1: Optional[VelaPattern] = None
+    _barra1_atr14: Optional[float] = None
     _grupo: list[VelaPattern] = field(default_factory=list)
     _barras_en_estado2: int = 0
 
@@ -82,6 +91,7 @@ class Detector3BP:
     def _reset(self) -> None:
         self.estado = Estado3BP.SIN_PATRON
         self._barra1 = None
+        self._barra1_atr14 = None
         self._grupo = []
         self._barras_en_estado2 = 0
 
@@ -141,6 +151,7 @@ class Detector3BP:
             if atr14 and atr14 > 0 and self._es_wrb_que_inicia(vela, atr14):
                 self.estado = Estado3BP.POSIBLE
                 self._barra1 = vela
+                self._barra1_atr14 = atr14
                 self._grupo = []
                 evento = EventoPatron3BP(estado=Estado3BP.POSIBLE, timestamp=vela.timestamp)
 
@@ -176,6 +187,9 @@ class Detector3BP:
                 if volumen_promedio and volumen_promedio > 0:
                     if vela.volume >= self.volumen_confirmado_mult * volumen_promedio:
                         tier = "confirmado"
+                barra1_wrb_ratio = None
+                if self._barra1_atr14:
+                    barra1_wrb_ratio = (self._barra1.high - self._barra1.low) / self._barra1_atr14
                 evento = EventoPatron3BP(
                     estado=Estado3BP.ENTRADA,
                     timestamp=vela.timestamp,
@@ -183,6 +197,7 @@ class Detector3BP:
                     entry=entry,
                     stop=stop,
                     tier=tier,
+                    barra1_wrb_ratio=barra1_wrb_ratio,
                 )
                 self._reset()
             elif self._bar_confirma_grupo(vela):

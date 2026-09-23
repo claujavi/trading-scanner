@@ -121,6 +121,7 @@ class TursoClient:
             (self.DDL_BP34_BACKTEST_RUNS, None),
             ("ALTER TABLE scan_results ADD COLUMN estructura_pivotes TEXT", None),
             ("ALTER TABLE scan_results ADD COLUMN ema200_diaria REAL", None),
+            ("ALTER TABLE bp34_eventos ADD COLUMN barra1_wrb_ratio REAL", None),
         ]
         await self._batch(statements)
 
@@ -393,9 +394,9 @@ class TursoClient:
         INSERT INTO bp34_eventos (
             ticker, timeframe, fecha, timestamp, fuente, tipo, tier,
             entry, stop, target, resultado, resultado_r, mfe_r, mae_r,
-            tiempo_en_trade_minutos, config_snapshot, created_at
+            tiempo_en_trade_minutos, barra1_wrb_ratio, config_snapshot, created_at
         ) VALUES (
-            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
+            ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?
         )
         """
         params = [
@@ -414,6 +415,7 @@ class TursoClient:
             evento.mfe_r,
             evento.mae_r,
             evento.tiempo_en_trade_minutos,
+            evento.barra1_wrb_ratio,
             json.dumps(evento.config_snapshot, default=str),
             evento.created_at.isoformat(),
         ]
@@ -624,6 +626,7 @@ class TursoClient:
         mfe_r REAL,
         mae_r REAL,
         tiempo_en_trade_minutos INTEGER,
+        barra1_wrb_ratio REAL,
         config_snapshot TEXT NOT NULL,
         created_at TEXT NOT NULL
     )

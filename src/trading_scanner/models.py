@@ -405,6 +405,10 @@ class Bp34Evento(BaseModel):
     entry: float
     stop: float
     target: float  # entry + (entry-stop) × config.bp34_target_r_{timeframe}
+    # (high-low de la barra 1) / ATR14 al momento en que se detectó como WRB
+    # — ver engine/pattern_3bp.py::EventoPatron3BP.barra1_wrb_ratio. Informativo,
+    # no participa de ninguna decisión del detector ni del walker.
+    barra1_wrb_ratio: Optional[float] = None
 
     # ── Resultado del seguimiento post-señal ─────────────────────────────────
     resultado: ResultadoBp34 = ResultadoBp34.ABIERTO

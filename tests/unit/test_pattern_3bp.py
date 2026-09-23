@@ -109,7 +109,22 @@ def test_dispara_3bp_con_una_sola_barra_de_grupo():
     assert evento.tipo == "3BP"
     assert evento.entry == 10.0  # max(barra1.high=10, grupo highs=[9])
     assert evento.stop == 2.0    # min(barra1.low=2, grupo lows=[6])
+    assert evento.barra1_wrb_ratio == 2.0  # rango barra1 (8) / atr14 (4) al detectarla
     assert det.estado == Estado3BP.SIN_PATRON  # se resetea después de disparar
+
+
+def test_barra1_wrb_ratio_escala_con_el_rango_de_la_barra1():
+    """El ratio se calcula contra el ATR14 vigente CUANDO se detectó la
+    barra 1, no contra el ATR14 de la barra gatillo (pueden pasar varias
+    barras, y ATR14 varía de una llamada a la otra en el uso real)."""
+    det = _detector()
+    det.procesar_barra(_v(0, high=13.0, low=1.0, close=12.0), atr14=4.0)  # barra1, rango=12
+    det.procesar_barra(_v(1, high=12.0, low=7.0, close=11.0), atr14=9.0)  # grupo, atr14 distinto
+
+    evento = det.procesar_barra(_v(2, high=13.5, low=12.0, close=13.3), atr14=1.0)  # gatillo
+
+    assert evento.estado == Estado3BP.ENTRADA
+    assert evento.barra1_wrb_ratio == 3.0  # 12 / 4.0 (atr14 de la barra1), no /9.0 ni /1.0
 
 
 def test_descarta_el_patron_si_una_tercera_barra_candidata_a_grupo_excede_el_tope():
