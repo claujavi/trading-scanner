@@ -209,6 +209,13 @@ class ScanConfig(BaseModel):
     # enumera taxativamente qué es "por timeframe": WRB, tolerancia, N de
     # invalidación, target R — el umbral de volumen no está en esa lista).
     bp34_volumen_confirmado_mult: float = Field(2.0, gt=0)  # volumen >= X × promedio en barra gatillo → tier "confirmado"
+    # Distancia mínima entrada-stop, en % del precio, para operar una señal.
+    # 0.0 = sin mínimo (comportamiento anterior). Con stops de ~0.2% del
+    # precio (unos pocos centavos) el spread y el slippage se comen el
+    # riesgo entero: en el backtest de 5m (2026-09-24) esas entradas
+    # concentraban casi todo el edge bruto y ninguno sobrevivía a 10 bps de
+    # costo. Compartido entre timeframes (tradabilidad, no forma del patrón).
+    bp34_stop_min_pct: float = Field(0.0, ge=0)
 
     # ── Validaciones cruzadas entre campos relacionados ──────────────────────
     @model_validator(mode="after")

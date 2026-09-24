@@ -86,8 +86,11 @@ async def _calibrar(
     fitness_config: FitnessConfig,
     storage: Optional[str],
     study_name: Optional[str],
+    overrides_config: Optional[dict] = None,
 ) -> tuple[optuna.Study, ScanConfig]:
     config_base = await get_active_config()
+    if overrides_config:
+        config_base = config_base.model_copy(update=overrides_config)
     study = optuna.create_study(
         direction="maximize", storage=storage, study_name=study_name, load_if_exists=True,
     )
@@ -139,6 +142,20 @@ def run(
     ),
     fecha_inicio: Optional[str] = typer.Option(None, help="YYYY-MM-DD. Sin esto: inicio del rango cacheado."),
     fecha_fin: Optional[str] = typer.Option(None, help="YYYY-MM-DD. Sin esto: fin del rango cacheado."),
+    slippage_bps: Optional[float] = typer.Option(
+        None,
+        help=(
+            "Slippage por lado en bps para el walker (entrada, stop, target, cierre). Sin esto usa el "
+            "de la config activa. El walker antes lo ignoraba: recomendable >= 5 para 5m."
+        ),
+    ),
+    stop_min_pct: Optional[float] = typer.Option(
+        None,
+        help=(
+            "Distancia mínima entrada-stop en % del precio; descarta entradas con stop más corto "
+            "(bp34_stop_min_pct). Sin esto usa el de la config activa (0 = sin mínimo)."
+        ),
+    ),
     study_name: Optional[str] = typer.Option(
         None,
         help=(
@@ -190,9 +207,20 @@ def run(
         f"{d_inicio} a {d_fin}, {n_trials} trials, study={study_name or '(in-memory)'}[/green]"
     )
 
+    overrides_config = {}
+    if slippage_bps is not None:
+        overrides_config["slippage_bps"] = slippage_bps
+    if stop_min_pct is not None:
+        overrides_config["bp34_stop_min_pct"] = stop_min_pct
+    if overrides_config:
+        console.log(f"[cyan]Overrides sobre la config activa: {overrides_config}[/cyan]")
+
     fitness_config = FitnessConfig(trades_objetivo=trades_objetivo, peso_drawdown=peso_drawdown)
     study, _ = asyncio.run(
-        _calibrar(timeframe, lista_tickers, d_inicio, d_fin, n_trials, fitness_config, storage, study_name)
+        _calibrar(
+            timeframe, lista_tickers, d_inicio, d_fin, n_trials, fitness_config, storage, study_name,
+            overrides_config,
+        )
     )
 
     completos = [t for t in study.trials if t.state == optuna.trial.TrialState.COMPLETE]

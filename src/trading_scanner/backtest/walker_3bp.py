@@ -70,6 +70,7 @@ def _resolver_entrada(
     stop: float,
     target_r: float,
     timeframe: str,
+    slippage_bps: float = 0.0,
 ) -> tuple[ResultadoBp34, float, float, float, int]:
     """`velas_desde_gatillo` incluye la barra gatillo (índice 0, la que
     disparó ENTRADA) y todo lo que sigue en el día, ya truncado al cierre
@@ -79,13 +80,27 @@ def _resolver_entrada(
     no hay forma de saber el orden real intra-barra. Mismo criterio
     pesimista que simulator.py::_fixed_rr: si una barra toca ambos, gana
     el stop. Devuelve (resultado, resultado_r, mfe_r, mae_r,
-    tiempo_en_trade_minutos)."""
+    tiempo_en_trade_minutos).
+
+    `slippage_bps` (por lado, misma convención que simulator.py::_slippage):
+    la entrada se llena `slippage_bps` más cara y cada salida (stop, target
+    o cierre) `slippage_bps` más barata. El R sigue medido contra el riesgo
+    teórico (entry - stop), así que un stop pierde -1R - costo, no -1R
+    exacto — el costo en R crece cuanto más corto es el stop (10 bps de
+    ida y vuelta se comen 0.5R con un stop de 0.2% del precio y 0.05R con
+    uno de 2%). mfe_r/mae_r quedan sin slippage: son informativos del
+    movimiento del precio, no de un fill. Con slippage_bps=0 el resultado
+    es idéntico al de antes (fills perfectos)."""
     stop_dist = entry - stop
     if not velas_desde_gatillo or stop_dist <= 0:
         return ResultadoBp34.SIN_DEFINIR, 0.0, 0.0, 0.0, 0
 
     target = entry + stop_dist * target_r
     minutos_vela = _MINUTOS_POR_TIMEFRAME[timeframe]
+    slip = slippage_bps / 10_000
+
+    def _costo_r(salida: float) -> float:
+        return slip * (salida + entry) / stop_dist
 
     mfe_r = 0.0
     mae_r = 0.0
@@ -93,12 +108,12 @@ def _resolver_entrada(
         mfe_r = max(mfe_r, (vela.high - entry) / stop_dist)
         mae_r = min(mae_r, (vela.low - entry) / stop_dist)
         if vela.low <= stop:
-            return ResultadoBp34.STOP, -1.0, mfe_r, mae_r, i * minutos_vela
+            return ResultadoBp34.STOP, -1.0 - _costo_r(stop), mfe_r, mae_r, i * minutos_vela
         if vela.high >= target:
-            return ResultadoBp34.TARGET, target_r, mfe_r, mae_r, i * minutos_vela
+            return ResultadoBp34.TARGET, target_r - _costo_r(target), mfe_r, mae_r, i * minutos_vela
 
     cierre = velas_desde_gatillo[-1].close
-    resultado_r = (cierre - entry) / stop_dist
+    resultado_r = (cierre - entry) / stop_dist - _costo_r(cierre)
     tiempo = (len(velas_desde_gatillo) - 1) * minutos_vela
     return ResultadoBp34.SIN_DEFINIR, resultado_r, mfe_r, mae_r, tiempo
 
@@ -131,8 +146,13 @@ def _caminar_dia(
         if evento is None or evento.estado != Estado3BP.ENTRADA:
             continue
 
+        # Stop demasiado corto para operarse (ver ScanConfig.bp34_stop_min_pct):
+        # se descarta la entrada, no se cuenta como pérdida ni ganancia.
+        if (evento.entry - evento.stop) / evento.entry * 100 < config.bp34_stop_min_pct:
+            continue
+
         resultado, resultado_r, mfe_r, mae_r, tiempo = _resolver_entrada(
-            velas_dia[i:], evento.entry, evento.stop, target_r, timeframe
+            velas_dia[i:], evento.entry, evento.stop, target_r, timeframe, config.slippage_bps
         )
         eventos.append(Bp34Evento(
             ticker=ticker,

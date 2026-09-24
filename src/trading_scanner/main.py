@@ -135,6 +135,8 @@ async def lifespan(app: FastAPI):
         error de persistencia se loguea y se descarta."""
         try:
             config = await get_active_config()
+            if (evento.entry - evento.stop) / evento.entry * 100 < config.bp34_stop_min_pct:
+                return  # mismo criterio de tradabilidad que el walker de backtest
             target_r = getattr(config, f"bp34_target_r_{timeframe}")
             evento_bp34 = Bp34Evento(
                 ticker=ticker,
