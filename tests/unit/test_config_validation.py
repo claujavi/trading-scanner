@@ -72,3 +72,10 @@ def test_slippage_bps_negativo_es_rechazado():
 
 def test_peso_cero_desactiva_criterio_sin_error():
     ScanConfig(peso_relvol=0.0)
+
+
+def test_ventana_de_entrada_3bp_requiere_sesion_regular():
+    with pytest.raises(ValidationError):
+        ScanConfig(bp34_ventana_entrada_minutos=90, bp34_entradas_solo_sesion_regular=False)
+    ScanConfig(bp34_ventana_entrada_minutos=90, bp34_entradas_solo_sesion_regular=True)  # válido
+    ScanConfig(bp34_ventana_entrada_minutos=0, bp34_entradas_solo_sesion_regular=False)  # default, válido

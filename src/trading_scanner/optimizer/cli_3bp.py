@@ -156,6 +156,22 @@ def run(
             "(bp34_stop_min_pct). Sin esto usa el de la config activa (0 = sin mínimo)."
         ),
     ),
+    sesion_regular: bool = typer.Option(
+        True,
+        "--sesion-regular/--todas-las-horas",
+        help=(
+            "Solo se aceptan entradas 9:30-16:00 NY (default); el detector igual se alimenta desde las "
+            "4:00 (contexto de pre-market). --todas-las-horas reproduce el comportamiento anterior, con "
+            "60% de entradas en pre-market/madrugada (backtest de 2026-09-25, no operables)."
+        ),
+    ),
+    ventana_entrada_min: int = typer.Option(
+        90,
+        help=(
+            "Minutos desde las 9:30 NY durante los cuales se aceptan entradas nuevas (90 = hasta las "
+            "11:00; 0 = toda la sesión). Requiere --sesion-regular."
+        ),
+    ),
     study_name: Optional[str] = typer.Option(
         None,
         help=(
@@ -212,6 +228,11 @@ def run(
         overrides_config["slippage_bps"] = slippage_bps
     if stop_min_pct is not None:
         overrides_config["bp34_stop_min_pct"] = stop_min_pct
+    if ventana_entrada_min > 0 and not sesion_regular:
+        console.log("[red]--ventana-entrada-min requiere --sesion-regular.[/red]")
+        raise typer.Exit(code=1)
+    overrides_config["bp34_entradas_solo_sesion_regular"] = sesion_regular
+    overrides_config["bp34_ventana_entrada_minutos"] = ventana_entrada_min
     if overrides_config:
         console.log(f"[cyan]Overrides sobre la config activa: {overrides_config}[/cyan]")
 

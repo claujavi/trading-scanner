@@ -6,17 +6,22 @@ caminador vela por vela, no el patrón "un día = un contexto" de
 backtest/runner.py (incompatible con una máquina de estados intradía, ver
 checkpoint del paso 4, ya resuelto).
 
-Replica EXACTAMENTE el reseteo diario que ya usa el vivo
-(market_data_cache.py::seed()/_crear_detector_3bp): un Detector3BP nuevo y
-un contexto de velas vacío por cada día de trading — nunca hereda contexto
-de pre-market ni de días previos (mismo "punto ciego" ya documentado allá:
-sin señales posibles en los primeros ~15-45 minutos de sesión según
-timeframe). ATR14 y volumen promedio de referencia se calculan sobre la
-propia serie del día (no el ATR%/volumen diario que usa el clasificador de
-6 criterios) — reusa las mismas funciones privadas que ya usa el stream
-(_atr14_de_velas/_volumen_promedio_de_velas/_a_vela_pattern/
-_crear_detector_3bp) en vez de reimplementarlas, mismo criterio que ya
-aplicó el resto del sistema hoy (ver runner.py/simulator.py).
+Reseteo diario como el vivo (market_data_cache.py::seed()/
+_crear_detector_3bp): un Detector3BP nuevo y un contexto de velas vacío por
+cada día de trading — nunca hereda contexto de días previos. ATR14 y volumen
+promedio de referencia se calculan sobre la propia serie del día (no el
+ATR%/volumen diario que usa el clasificador de 6 criterios), de forma
+incremental (_ContextoIncremental, verificado igual a
+market_data_cache._atr14_de_velas/_volumen_promedio_de_velas que usa el
+stream) para que un trial del optimizador no recalcule todo por cada barra.
+
+Horario (ScanConfig.bp34_entradas_solo_sesion_regular / _ventana_entrada_
+minutos): las velas de Schwab traen madrugada y pre-market, y el 60% de las
+entradas del backtest original eran de ahí (no operables). Con el filtro
+activo el detector se alimenta desde las 4:00 NY —el contexto de pre-market
+es parte del patrón, la "barra ancha" suele ser la de las 9:30 contra un ATR
+de pre-market chico— pero solo se aceptan ENTRADAS dentro de la sesión
+regular (y de la ventana, si se pide).
 
 Una entrada (Estado 3) se sigue con el precio real post-señal DENTRO del
 mismo día (3BP es una señal de timing intradía — la spec no define
@@ -33,19 +38,77 @@ import polars as pl
 
 from ..engine.pattern_3bp import Estado3BP
 from ..fetchers import history_cache
-from ..fetchers.market_data_cache import (
-    Vela,
-    _a_vela_pattern,
-    _atr14_de_velas,
-    _crear_detector_3bp,
-    _volumen_promedio_de_velas,
-)
+from ..fetchers.market_data_cache import Vela, _a_vela_pattern, _crear_detector_3bp
 from ..logging_setup import console
 from ..models import Bp34Evento, FuenteDatos, ResultadoBp34, ScanConfig
 from .runner import _dias_habiles
 from .simulator import _truncar_a_cierre_forzado
 
 _MINUTOS_POR_TIMEFRAME = {"5m": 5, "15m": 15}
+
+_APERTURA_NY_MIN = 9 * 60 + 30   # 9:30
+_CIERRE_NY_MIN = 16 * 60         # 16:00 (exclusivo)
+_INICIO_CONTEXTO_NY_MIN = 4 * 60  # 4:00: inicio del pre-market, desde acá se alimenta el detector
+
+_ATR_ALPHA = 1.0 / 14  # mismo período fijo que market_data_cache._atr14_de_velas
+
+
+def _minutos_ny_expr() -> pl.Expr:
+    """Minutos desde medianoche NY de cada vela. Los timestamps de Schwab
+    son naive pero representan un instante UTC (ver
+    simulator.py::_truncar_a_cierre_forzado) — hay que declararlos UTC y
+    convertir, nunca leer la hora tal cual."""
+    ts = pl.col("timestamp").dt.replace_time_zone("UTC").dt.convert_time_zone("America/New_York")
+    return ts.dt.hour().cast(pl.Int32) * 60 + ts.dt.minute().cast(pl.Int32)
+
+
+def _filtrar_contexto_y_sesion(df: pl.DataFrame) -> pl.DataFrame:
+    """Velas 4:00 <= hora < 16:00 NY: pre-market (contexto para el detector)
+    más sesión regular. Descarta la madrugada (00:00-4:00) y el after-hours,
+    que Schwab incluye en las velas intradía y donde nadie opera."""
+    if df.is_empty():
+        return df
+    minutos = _minutos_ny_expr()
+    return df.filter((minutos >= _INICIO_CONTEXTO_NY_MIN) & (minutos < _CIERRE_NY_MIN))
+
+
+class _ContextoIncremental:
+    """ATR14 y volumen promedio "hasta esta barra" en O(1) por barra.
+
+    Reemplaza llamar a market_data_cache._atr14_de_velas(contexto) /
+    _volumen_promedio_de_velas(contexto) con `contexto = velas[: i + 1]` en
+    cada barra: esas reconvierten toda la lista a DataFrame y recalculan
+    desde cero (~1 ms por llamada, cuadratico por dia) y eran el 95% del
+    tiempo de un trial del optimizador. Da EXACTAMENTE los mismos valores
+    (tests/unit/test_walker_3bp.py compara contra ambas funciones sobre datos
+    aleatorios): calc_atr es TR + EWM(alpha=1/14, adjust=False), con
+    TR(primera barra) = high - low; el volumen promedio es la media de las
+    barras ANTERIORES a la actual, y hacen falta al menos 2 (para ATR14) /
+    2 anteriores (para el volumen), igual que las funciones originales."""
+
+    def __init__(self) -> None:
+        self._n = 0
+        self._atr: Optional[float] = None
+        self._prev_close: Optional[float] = None
+        self._vol_anteriores = 0.0
+
+    def avanzar(self, vela: Vela) -> tuple[Optional[float], Optional[float]]:
+        """Incorpora `vela` y devuelve (atr14, volumen_promedio_de_las_anteriores)."""
+        rango = vela.high - vela.low
+        if self._prev_close is None:
+            tr = rango
+        else:
+            tr = max(rango, abs(vela.high - self._prev_close), abs(vela.low - self._prev_close))
+        self._atr = tr if self._atr is None else self._atr + _ATR_ALPHA * (tr - self._atr)
+
+        anteriores = self._n
+        vol_promedio = (self._vol_anteriores / anteriores) if anteriores >= 2 else None
+        self._n += 1
+        self._vol_anteriores += vela.volume
+        self._prev_close = vela.close
+
+        atr14 = self._atr if self._n >= 2 else None
+        return atr14, vol_promedio
 
 
 def _df_a_velas(df: pl.DataFrame) -> list[Vela]:
@@ -125,26 +188,41 @@ def _caminar_dia(
     fecha: date,
     config: ScanConfig,
     fuente: FuenteDatos,
+    entradas_desde: int = 0,
+    entradas_hasta: Optional[int] = None,
 ) -> list[Bp34Evento]:
     """Camina un día de un ticker+timeframe: detector fresco, contexto
     vacío — mismo reseteo diario que ya hace seed() en vivo. Un mismo día
     puede producir varias entradas independientes (el detector vuelve a
-    SIN_PATRON apenas emite ENTRADA, ver pattern_3bp.py::procesar_barra)."""
+    SIN_PATRON apenas emite ENTRADA, ver pattern_3bp.py::procesar_barra).
+
+    `entradas_desde` / `entradas_hasta` (índices sobre `velas_dia`,
+    [desde, hasta)): solo las barras de ese rango pueden originar una
+    ENTRADA (ver ScanConfig.bp34_entradas_solo_sesion_regular / _ventana_
+    entrada_minutos). El detector se alimenta igual con TODAS las barras
+    previas —el contexto de pre-market es parte del patrón— y una entrada
+    aceptada se resuelve con TODAS las barras restantes del día, no se corta
+    en `entradas_hasta`. Una ENTRADA anterior a `entradas_desde` reinicia al
+    detector pero no se registra. Sin límites (defaults) = todo el día."""
     detector = _crear_detector_3bp(config, timeframe)
     target_r = getattr(config, f"bp34_target_r_{timeframe}")
     config_snapshot = config.model_dump(mode="json")
+    limite = len(velas_dia) if entradas_hasta is None else entradas_hasta
+    contexto = _ContextoIncremental()
 
     eventos: list[Bp34Evento] = []
     for i, vela in enumerate(velas_dia):
-        contexto = velas_dia[: i + 1]
-        atr14 = _atr14_de_velas(contexto)
+        if i >= limite:
+            break
+        atr14, volumen_promedio = contexto.avanzar(vela)
         if atr14 is None:
             continue  # todavía no hay suficiente contexto de sesión — mismo criterio que en vivo
-        volumen_promedio = _volumen_promedio_de_velas(contexto)
 
         evento = detector.procesar_barra(_a_vela_pattern(vela), atr14, volumen_promedio)
         if evento is None or evento.estado != Estado3BP.ENTRADA:
             continue
+        if i < entradas_desde:
+            continue  # entrada fuera de horario (pre-market): no operable, no se registra
 
         # Stop demasiado corto para operarse (ver ScanConfig.bp34_stop_min_pct):
         # se descarta la entrada, no se cuenta como pérdida ni ganancia.
@@ -197,12 +275,34 @@ async def caminar_3bp(
     if df_full.is_empty():
         return []
 
+    solo_sesion = config.bp34_entradas_solo_sesion_regular
+    if solo_sesion:
+        # Una sola vez por ticker (no por día): también achica el df que
+        # recorre filter_range() en cada día del loop.
+        df_full = _filtrar_contexto_y_sesion(df_full)
+        if df_full.is_empty():
+            return []
+
     eventos: list[Bp34Evento] = []
     for dia in _dias_habiles(fecha_inicio_efectiva, fecha_fin):
         df_dia = history_cache.filter_range(df_full, dia, dia)
         df_dia = _truncar_a_cierre_forzado(df_dia)
         if df_dia.is_empty():
             continue
+
+        entradas_desde, entradas_hasta = 0, None
+        if solo_sesion:
+            minutos = _minutos_ny_expr()
+            df_dia = df_dia.sort("timestamp")  # los índices de abajo son posiciones en orden cronológico
+            entradas_desde = df_dia.filter(minutos < _APERTURA_NY_MIN).height
+            if config.bp34_ventana_entrada_minutos > 0:
+                entradas_hasta = df_dia.filter(
+                    minutos < _APERTURA_NY_MIN + config.bp34_ventana_entrada_minutos
+                ).height
+
         velas_dia = _df_a_velas(df_dia)
-        eventos.extend(_caminar_dia(velas_dia, ticker, timeframe, dia, config, FuenteDatos.HISTORICO))
+        eventos.extend(_caminar_dia(
+            velas_dia, ticker, timeframe, dia, config, FuenteDatos.HISTORICO,
+            entradas_desde=entradas_desde, entradas_hasta=entradas_hasta,
+        ))
     return eventos

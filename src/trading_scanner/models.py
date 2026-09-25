@@ -216,10 +216,31 @@ class ScanConfig(BaseModel):
     # concentraban casi todo el edge bruto y ninguno sobrevivía a 10 bps de
     # costo. Compartido entre timeframes (tradabilidad, no forma del patrón).
     bp34_stop_min_pct: float = Field(0.0, ge=0)
+    # Horario en que el walker de BACKTEST acepta ENTRADAS (el vivo no filtra
+    # por sesión, ver docs/spec_modulo_3bp_4bp.md). Las velas de Schwab traen
+    # horario extendido —incluso madrugada— y el walker corría el detector
+    # desde la primera vela del día: el 60% de las entradas del backtest de
+    # 5m/15m (2026-09-25) eran pre-market/madrugada, donde el edge bruto era
+    # el mayor (+0.37R) y a la vez el menos operable (spreads, stops de
+    # centavos). True = solo se aceptan entradas dentro de la sesión regular
+    # (9:30-16:00 NY). El detector igual se alimenta desde las 4:00 NY: el
+    # contexto de pre-market es parte del patrón (la "barra ancha" suele ser
+    # la barra de las 9:30 contra un ATR de pre-market chico) y arrancar el
+    # detector a las 9:30 casi elimina las señales. False = comportamiento
+    # anterior (entradas a cualquier hora).
+    bp34_entradas_solo_sesion_regular: bool = False
+    # Minutos desde las 9:30 NY durante los cuales se aceptan entradas nuevas
+    # (90 = hasta las 11:00). Una entrada aceptada se sigue igual hasta
+    # target/stop/cierre forzado. 0 = toda la sesión regular. Requiere
+    # bp34_entradas_solo_sesion_regular. En sesión regular el 85% de las
+    # entradas cae entre 9:30 y 11:00.
+    bp34_ventana_entrada_minutos: int = Field(0, ge=0)
 
     # ── Validaciones cruzadas entre campos relacionados ──────────────────────
     @model_validator(mode="after")
     def _validar_rangos_relacionados(self) -> "ScanConfig":
+        if self.bp34_ventana_entrada_minutos > 0 and not self.bp34_entradas_solo_sesion_regular:
+            raise ValueError("bp34_ventana_entrada_minutos requiere bp34_entradas_solo_sesion_regular=True")
         if self.precio_min >= self.precio_max:
             raise ValueError("precio_min debe ser menor que precio_max")
         if self.variacion_diaria_escala_min >= self.variacion_diaria_escala_max:

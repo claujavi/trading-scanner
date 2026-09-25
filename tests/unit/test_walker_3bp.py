@@ -149,12 +149,9 @@ def _config_3bp(**overrides) -> ScanConfig:
 
 
 def test_caminar_dia_detecta_entrada_y_la_resuelve_por_target(monkeypatch):
-    # ATR fijo (mismo criterio que test_pattern_3bp.py) — evita depender de
-    # que calc_atr converja con pocas velas sintéticas. Contexto < 2 velas
-    # -> None (mismo umbral que _atr14_de_velas real, ver market_data_cache.py).
-    monkeypatch.setattr(walker_3bp, "_atr14_de_velas", lambda velas: 4.0 if len(velas) >= 2 else None)
-    monkeypatch.setattr(walker_3bp, "_volumen_promedio_de_velas", lambda velas: 100_000.0)
-
+    # Sin parchear ATR ni volumen: el walker los calcula de forma incremental
+    # (_ContextoIncremental). Con estas velas el ATR real de la barra 1 es ~1.12,
+    # así que su rango de 8 supera de sobra el umbral (2 x ATR).
     base = datetime(2026, 1, 2, 9, 30)
     velas_dia = [
         _v(base, high=1.0, low=0.5, close=0.8),  # relleno — solo da contexto de 2 velas
@@ -195,13 +192,7 @@ def _velas_escenario_3bp() -> list[Vela]:
     ]
 
 
-def _fijar_contexto(monkeypatch):
-    monkeypatch.setattr(walker_3bp, "_atr14_de_velas", lambda velas: 4.0 if len(velas) >= 2 else None)
-    monkeypatch.setattr(walker_3bp, "_volumen_promedio_de_velas", lambda velas: 100_000.0)
-
-
 def test_caminar_dia_descarta_entradas_con_stop_mas_corto_que_el_minimo(monkeypatch):
-    _fijar_contexto(monkeypatch)
     # distancia al stop = (10 - 2) / 10 = 80% del precio
     eventos = walker_3bp._caminar_dia(
         _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
@@ -211,7 +202,6 @@ def test_caminar_dia_descarta_entradas_con_stop_mas_corto_que_el_minimo(monkeypa
 
 
 def test_caminar_dia_conserva_entradas_con_stop_igual_o_mayor_al_minimo(monkeypatch):
-    _fijar_contexto(monkeypatch)
     eventos = walker_3bp._caminar_dia(
         _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
         _config_3bp(bp34_stop_min_pct=80.0), FuenteDatos.HISTORICO,  # justo en el borde: se conserva
@@ -220,7 +210,6 @@ def test_caminar_dia_conserva_entradas_con_stop_igual_o_mayor_al_minimo(monkeypa
 
 
 def test_caminar_dia_aplica_el_slippage_de_la_config(monkeypatch):
-    _fijar_contexto(monkeypatch)
     # target = 14, entry = 10, stop_dist = 8: costo = 0.001 * (14 + 10) / 8 = 0.003R
     eventos = walker_3bp._caminar_dia(
         _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
@@ -231,9 +220,6 @@ def test_caminar_dia_aplica_el_slippage_de_la_config(monkeypatch):
 
 
 def test_caminar_dia_sin_patron_no_genera_eventos(monkeypatch):
-    monkeypatch.setattr(walker_3bp, "_atr14_de_velas", lambda velas: 4.0 if len(velas) >= 2 else None)
-    monkeypatch.setattr(walker_3bp, "_volumen_promedio_de_velas", lambda velas: 100_000.0)
-
     base = datetime(2026, 1, 2, 9, 30)
     velas_dia = [_v(base + timedelta(minutes=5 * i), high=1.0 + i * 0.01, low=0.9, close=0.95) for i in range(10)]
 
@@ -271,3 +257,165 @@ def test_caminar_3bp_sin_historial_no_rompe(monkeypatch):
         walker_3bp.caminar_3bp("XYZ", "5m", date(2026, 1, 2), date(2026, 1, 2), ScanConfig())
     )
     assert eventos == []
+
+
+# ── sesión regular y ventana de detección ───────────────────────────────
+
+
+def _df_velas(filas: list[tuple]) -> pl.DataFrame:
+    """filas: (timestamp UTC naive, open, high, low, close, volume)"""
+    return pl.DataFrame({
+        "timestamp": [f[0] for f in filas],
+        "open": [f[1] for f in filas], "high": [f[2] for f in filas], "low": [f[3] for f in filas],
+        "close": [f[4] for f in filas], "volume": [f[5] for f in filas],
+    }).with_columns(pl.col("timestamp").cast(pl.Datetime("ms")))
+
+
+def test_filtrar_contexto_y_sesion_conserva_premarket_desde_las_4_y_descarta_lo_demas():
+    # 2026-01-02 es EST (UTC-5): 4:00 NY = 09:00 UTC, 9:30 NY = 14:30 UTC, 16:00 NY = 21:00 UTC
+    df = _df_velas([
+        (datetime(2026, 1, 2, 5, 15), 1, 1, 1, 1, 1),    # 00:15 NY, madrugada -> fuera
+        (datetime(2026, 1, 2, 8, 55), 1, 1, 1, 1, 1),    # 3:55 NY -> fuera
+        (datetime(2026, 1, 2, 9, 0), 1, 1, 1, 1, 1),     # 4:00 NY, primera de pre-market -> dentro
+        (datetime(2026, 1, 2, 14, 25), 1, 1, 1, 1, 1),   # 9:25 NY, pre-market -> dentro (contexto)
+        (datetime(2026, 1, 2, 20, 55), 1, 1, 1, 1, 1),   # 15:55 NY, última de la sesión -> dentro
+        (datetime(2026, 1, 2, 21, 0), 1, 1, 1, 1, 1),    # 16:00 NY, after-hours -> fuera
+    ])
+    res = walker_3bp._filtrar_contexto_y_sesion(df)
+    assert res["timestamp"].to_list() == [
+        datetime(2026, 1, 2, 9, 0), datetime(2026, 1, 2, 14, 25), datetime(2026, 1, 2, 20, 55),
+    ]
+
+
+def test_filtrar_contexto_y_sesion_respeta_el_horario_de_verano():
+    # 2026-07-01 es EDT (UTC-4): 4:00 NY = 08:00 UTC — no 09:00
+    df = _df_velas([
+        (datetime(2026, 7, 1, 7, 55), 1, 1, 1, 1, 1),    # 3:55 NY -> fuera
+        (datetime(2026, 7, 1, 8, 0), 1, 1, 1, 1, 1),     # 4:00 NY -> dentro
+    ])
+    assert walker_3bp._filtrar_contexto_y_sesion(df)["timestamp"].to_list() == [datetime(2026, 7, 1, 8, 0)]
+
+
+# ── _ContextoIncremental: idéntico a las funciones que usa el stream ─────
+
+
+def test_contexto_incremental_da_los_mismos_valores_que_las_funciones_del_stream():
+    import random
+
+    from src.trading_scanner.fetchers.market_data_cache import _atr14_de_velas, _volumen_promedio_de_velas
+
+    rnd = random.Random(42)
+    base = datetime(2026, 1, 2, 9, 30)
+    velas, precio = [], 10.0
+    for i in range(40):
+        gap = rnd.uniform(-0.5, 0.5)
+        abre = precio + gap
+        cierra = abre + rnd.uniform(-0.6, 0.6)
+        alto = max(abre, cierra) + rnd.uniform(0, 0.4)
+        bajo = min(abre, cierra) - rnd.uniform(0, 0.4)
+        velas.append(Vela(
+            timestamp=base + timedelta(minutes=5 * i), open=abre, high=alto, low=bajo, close=cierra,
+            volume=rnd.uniform(100, 5000),
+        ))
+        precio = cierra
+
+    ctx = walker_3bp._ContextoIncremental()
+    for i, vela in enumerate(velas):
+        atr, vol = ctx.avanzar(vela)
+        esperado_atr = _atr14_de_velas(velas[: i + 1])
+        esperado_vol = _volumen_promedio_de_velas(velas[: i + 1])
+        if esperado_atr is None:
+            assert atr is None
+        else:
+            assert atr == pytest.approx(esperado_atr, rel=1e-9)
+        if esperado_vol is None:
+            assert vol is None
+        else:
+            assert vol == pytest.approx(esperado_vol, rel=1e-9)
+
+
+def test_ventana_de_entradas_no_corta_el_seguimiento_de_una_entrada_ya_aceptada():
+    velas = _velas_escenario_3bp()  # el gatillo es la barra de índice 3; el target se toca en la 4
+
+    fuera = walker_3bp._caminar_dia(
+        velas, "AAPL", "5m", date(2026, 1, 2), _config_3bp(), FuenteDatos.HISTORICO, entradas_hasta=3
+    )
+    assert fuera == []  # el gatillo (índice 3) queda fuera de la ventana [0, 3)
+
+    dentro = walker_3bp._caminar_dia(
+        velas, "AAPL", "5m", date(2026, 1, 2), _config_3bp(), FuenteDatos.HISTORICO, entradas_hasta=4
+    )
+    assert len(dentro) == 1
+    # la barra 4 está fuera de la ventana de entradas pero sí sirve para resolver
+    assert dentro[0].resultado == ResultadoBp34.TARGET
+
+
+def test_entradas_anteriores_al_inicio_permitido_no_se_registran():
+    velas = _velas_escenario_3bp()  # gatillo en el índice 3
+
+    pre = walker_3bp._caminar_dia(
+        velas, "AAPL", "5m", date(2026, 1, 2), _config_3bp(), FuenteDatos.HISTORICO, entradas_desde=4
+    )
+    assert pre == []  # el gatillo ocurre antes de entradas_desde: se descarta
+
+    ok = walker_3bp._caminar_dia(
+        velas, "AAPL", "5m", date(2026, 1, 2), _config_3bp(), FuenteDatos.HISTORICO, entradas_desde=3
+    )
+    assert len(ok) == 1
+
+
+def _historial_con_patron_solo_en_premarket() -> pl.DataFrame:
+    """El escenario 3BP completo a las 7:00-7:20 NY (12:00-12:20 UTC, EST),
+    más velas planas de sesión regular que no forman ningún patrón."""
+    pre = [
+        (datetime(2026, 1, 2, 12, 0), 0.8, 1.0, 0.5, 0.8, 1000.0),
+        (datetime(2026, 1, 2, 12, 5), 9.0, 10.0, 2.0, 9.0, 1000.0),
+        (datetime(2026, 1, 2, 12, 10), 8.0, 9.0, 6.0, 8.0, 1000.0),
+        (datetime(2026, 1, 2, 12, 15), 10.8, 11.0, 9.5, 10.8, 250_000.0),
+        (datetime(2026, 1, 2, 12, 20), 14.2, 14.5, 13.9, 14.2, 1000.0),
+    ]
+    rth = [(datetime(2026, 1, 2, 14, 30 + 5 * i), 14.0, 14.1, 13.9, 14.0, 1000.0) for i in range(6)]
+    return _df_velas(pre + rth)
+
+
+def _caminar(monkeypatch, config: ScanConfig):
+    async def fake_get_history(*args, **kwargs):
+        return _historial_con_patron_solo_en_premarket()
+
+    monkeypatch.setattr(history_cache, "get_history", fake_get_history)
+    return asyncio.run(walker_3bp.caminar_3bp("AAPL", "5m", date(2026, 1, 2), date(2026, 1, 2), config))
+
+
+def test_caminar_3bp_sin_filtro_de_sesion_detecta_el_patron_de_premarket(monkeypatch):
+    assert len(_caminar(monkeypatch, _config_3bp())) == 1
+
+
+def test_caminar_3bp_con_sesion_regular_ignora_el_patron_de_premarket(monkeypatch):
+    assert _caminar(monkeypatch, _config_3bp(bp34_entradas_solo_sesion_regular=True)) == []
+
+
+def test_el_contexto_de_premarket_habilita_la_barra_ancha_de_las_9_30():
+    """Razón de alimentar el detector desde las 4:00: la WRB del patrón suele
+    ser la propia barra de las 9:30 contra un ATR de pre-market chico. Sin
+    esas barras de contexto el ATR arranca en el rango de la barra de
+    apertura y el patrón no se detecta."""
+    base = datetime(2026, 1, 2, 8, 0)
+    premarket = [_v(base + timedelta(minutes=5 * i), high=10.05, low=9.95, close=10.0) for i in range(18)]
+    apertura = datetime(2026, 1, 2, 9, 30)
+    regular = [
+        _v(apertura, high=12.0, low=10.0, close=11.8),                                  # barra 1: rango 2 (WRB)
+        _v(apertura + timedelta(minutes=5), high=11.5, low=11.0, close=11.4),           # grupo
+        _v(apertura + timedelta(minutes=10), high=12.4, low=11.3, close=12.3),          # gatillo, rompe 12
+        _v(apertura + timedelta(minutes=15), high=13.5, low=12.3, close=13.2),          # toca el target (13)
+    ]
+    cfg = _config_3bp(bp34_entradas_solo_sesion_regular=True)
+
+    con_contexto = walker_3bp._caminar_dia(
+        premarket + regular, "AAPL", "5m", date(2026, 1, 2), cfg, FuenteDatos.HISTORICO,
+        entradas_desde=len(premarket),
+    )
+    assert len(con_contexto) == 1
+    assert con_contexto[0].entry == 12.0 and con_contexto[0].stop == 10.0
+
+    solo_sesion = walker_3bp._caminar_dia(regular, "AAPL", "5m", date(2026, 1, 2), cfg, FuenteDatos.HISTORICO)
+    assert solo_sesion == []
