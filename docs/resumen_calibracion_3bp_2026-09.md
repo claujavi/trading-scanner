@@ -142,6 +142,102 @@ sin correlación entre posiciones del mismo día, muestra de 9 meses).
 
 ---
 
+## Ronda 4 (2026-09-28) — cuenta en dólares, ajuste de riesgo, redondeo real y precio de los nombres
+
+Preguntas concretas del trader sobre la simulación de cuenta de la Ronda 3, todas sobre 15m (la
+recomendada), capital inicial $300, mismos supuestos de siempre salvo que se indique lo contrario.
+
+### Cuenta a $300, estrategia recomendada (1% de riesgo, capitalizando a diario)
+
+Equity final: **$567** (x1.89) en los ~9-10 meses simulados, DD máximo real 13.6%. Bootstrap (1500
+remuestreos de días): mediana $545, p10 $396, solo 1% de los caminos termina por debajo de los $300
+iniciales — resultado razonablemente robusto al orden en que cayeron los días buenos/malos.
+
+### ¿Riesgo fijo en dólares para siempre, o reajustado cada N semanas?
+
+| Régimen (riesgo 2%, para que se note el efecto) | Equity final | DD máx |
+|---|---|---|
+| Fijo sobre $300 (nunca se ajusta) | $643 (x2.14) | 13.7% |
+| Reajustado cada 13 semanas | $729 (x2.43) | 16.0% |
+| Reajustado cada 4 semanas | $753 (x2.51) | 15.6% |
+| Reajustado cada 2 semanas | $762 (x2.54) | 15.8% |
+| Compuesto a diario | $776 (x2.59) | 15.7% |
+
+El drawdown casi no cambia entre regímenes — lo que cambia es la velocidad de crecimiento.
+Reajustar cada 4 semanas ya captura casi toda la ventaja de capitalizar a diario, con mucho menos
+trabajo operativo. El "fijo para siempre" es el más simple de ejecutar pero crece ~15% más lento
+en este período.
+
+**Extrapolación matemática a 5 años (NO una predicción — ver caveats):** remuestreando por bloques
+semanales reales (bootstrap, no una tasa fija) hasta cubrir 260 semanas, 400 caminos:
+
+| Régimen (riesgo 2%) | Mediana a 5 años | p10 – p90 |
+|---|---|---|
+| Fijo sobre $300 | $3,564 | $2,773 – $4,274 |
+| Reajustado cada 4 semanas | **$47,755** | $16,401 – $130,230 |
+
+A 9 meses la diferencia entre fijo y capitalizado era marginal; a 5 años se vuelve de un orden de
+magnitud completo — crecimiento lineal vs. exponencial. **Esto no es una predicción real**: asume
+sin decaimiento de la ventaja, sin límite de capacidad/liquidez al crecer el tamaño de la cuenta
+(con $47k en microcaps de baja liquidez el trader empieza a mover el precio con su propia orden,
+algo que el modelo no contempla), sin cambio de régimen de mercado, y es literalmente la misma
+ventana de 9 meses repetida. Conclusión útil que sí se sostiene: cuanto más largo el horizonte,
+más importa reajustar el riesgo — no fijarlo para siempre.
+
+### Redondeo real a acciones enteras (no fraccionarias)
+
+Implementada la fórmula ya documentada en la Prioridad 4 de este backlog (`cantidad_acciones =
+round(riesgo_$ / distancia_al_stop)`, redondeo estándar):
+
+| Régimen | Ideal (fraccionario) | Real (acciones enteras) |
+|---|---|---|
+| 1% fijo | $512 | $571 |
+| 1% cada 4 semanas | $562 | $626 |
+| 2% fijo | $643 | $709 |
+| 2% cada 4 semanas | $753 | $859 |
+
+El redondeo real dio *mejor* resultado que el sizing ideal en esta muestra — pero es ruido de
+cuantización, no una ventaja real: redondear 0.7 acciones a 1 entera implica arriesgar 43% más de
+lo planeado en ese trade puntual, y acá ese ruido jugó a favor por casualidad de la secuencia, no
+por diseño. Dato sólido y no ambiguo: **solo 1% de las señales (17-21 de 1895) quedó descartada por
+no alcanzar ni para 1 acción** — con $300 y stops típicos de centavos, el redondeo no es un
+problema serio de cantidad de trades ejecutables.
+
+### ¿El edge se sostiene en acciones de precio más alto / más líquidas?
+
+El universo cacheado (483 tickers) está fuertemente inclinado a precios bajos (mediana $12.1);
+solo 30 tickers cotizan ≥$50 y 14 ≥$100 (agosto 2026). De mega-caps reales solo están cacheadas
+AAPL y MSFT — faltan GOOGL, AMZN, NVDA, META, TSLA, JPM, V, UNH y el resto.
+
+Desglosando las 1895 señales de 15m por precio de entrada:
+
+| Precio de entrada | n | Win rate | PF | Expectancy |
+|---|---|---|---|---|
+| $0-20 | 1275 | 47.0% | 1.40 | **+0.155 R** |
+| $20-50 | 445 | 47.0% | 0.96 | -0.014 R |
+| $50-100 | 103 | 45.6% | 0.93 | -0.025 R |
+| $100+ | 72 | 44.4% | 1.22 | +0.081 R |
+
+**Todo el edge positivo está concentrado en el tramo <$20.** El tramo $20-100 da negativo. El de
+$100+ vuelve a ser positivo pero con muestra chica (72 trades) y mezclando nombres volátiles que
+puntualmente cotizaron caro (AEHL, FCUV, WETO, VEEE) con algunos conocidos (AAPL, MSFT, PLTR, SHOP,
+SNOW) — no es evidencia de que el patrón funcione en large caps líquidas de verdad. Esperable: los
+`bp34_*` se calibraron sobre una mezcla dominada por nombres baratos y volátiles, sin motivo para
+esperar que transfieran a un régimen de menor volatilidad relativa.
+
+**No es algo que se resuelva filtrando los datos ya generados** — haría falta (1) precargar un
+universo de 50-100 acciones grandes y líquidas reales (`trading-scanner-precargar-historico`) y
+(2) recalibrar `bp34_*` específicamente para ese universo, no reusar los parámetros de microcaps.
+Relevante para cuando la cuenta crezca lo suficiente como para necesitar nombres más líquidos (el
+Stock Hacker de ToS que alimenta el CSV diario, fuera del alcance de este repo, sería el lugar
+natural para ampliar el criterio de selección en ese momento — no `ScanConfig`, que ya tiene
+`precio_max=500` bastante amplio y que además `walker_3bp.py` ni siquiera aplica hoy).
+
+**Status: identificado, no implementado.** Pendiente nuevo, en la misma categoría que la
+revalidación contra `universo_real`.
+
+---
+
 ## Qué falta antes de operar esto en serio
 
 1. **El vivo no filtra por horario todavía.** `bp34_entradas_solo_sesion_regular` solo se aplicó al
@@ -157,12 +253,15 @@ sin correlación entre posiciones del mismo día, muestra de 9 meses).
 4. **Muestra de ~9-10 meses** (nov 2025 - ago 2026) — corta para conclusiones fuertes, un solo
    régimen de mercado. El "anualizado" es una extrapolación matemática de esos 9 meses, no una
    proyección real.
-5. **La simulación de cuenta usa position sizing ideal** (fracciones exactas de equity, sin
-   redondeo a cantidad de acciones enteras) y no modela correlación entre posiciones abiertas el
-   mismo día (varios tickers moviéndose juntos en un día de mercado direccional). Ambos sesgan el
-   resultado optimista, en un grado no cuantificado.
+5. **Redondeo a acciones enteras: probado en la Ronda 4, efecto menor de lo temido** — solo 1% de
+   las señales quedó descartada por no alcanzar ni para 1 acción con $300. Sigue sin modelarse la
+   correlación entre posiciones abiertas el mismo día (varios tickers moviéndose juntos en un día
+   de mercado direccional) — ese sesgo optimista sigue sin cuantificar.
 6. **La variante "15m con riesgo ≤2%" no fue calibrada como tal** — es la misma señal de 15m con
    el dial de riesgo subido, no una recalibración de `bp34_*` pensada para ese nivel de riesgo.
+7. **El edge no se sostiene fuera de acciones baratas (<$20)** — ver Ronda 4. Antes de operar con
+   una cuenta más grande hace falta precargar un universo de nombres líquidos/caros de verdad y
+   recalibrar `bp34_*` para ese régimen — no asumir que los parámetros de microcaps transfieren.
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 
