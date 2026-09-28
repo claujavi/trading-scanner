@@ -419,3 +419,51 @@ def test_el_contexto_de_premarket_habilita_la_barra_ancha_de_las_9_30():
 
     solo_sesion = walker_3bp._caminar_dia(regular, "AAPL", "5m", date(2026, 1, 2), cfg, FuenteDatos.HISTORICO)
     assert solo_sesion == []
+
+
+# ── minutos_desde_apertura_ny / evento_en_ventana_permitida ──────────────
+
+
+def test_minutos_desde_apertura_ny_en_la_apertura_exacta():
+    # 2026-01-02 es EST (UTC-5): 9:30 NY = 14:30 UTC
+    assert walker_3bp.minutos_desde_apertura_ny(datetime(2026, 1, 2, 14, 30)) == 0
+
+
+def test_minutos_desde_apertura_ny_negativo_antes_de_la_apertura():
+    assert walker_3bp.minutos_desde_apertura_ny(datetime(2026, 1, 2, 14, 0)) == -30
+
+
+def test_minutos_desde_apertura_ny_respeta_horario_de_verano():
+    # 2026-07-01 es EDT (UTC-4): 9:30 NY = 13:30 UTC
+    assert walker_3bp.minutos_desde_apertura_ny(datetime(2026, 7, 1, 13, 30)) == 0
+
+
+def test_evento_en_ventana_permitida_sin_restriccion_por_default():
+    cfg = _config_3bp()  # bp34_entradas_solo_sesion_regular=False por default
+    assert walker_3bp.evento_en_ventana_permitida(datetime(2026, 1, 2, 5, 0), cfg) is True
+
+
+def test_evento_en_ventana_permitida_descarta_premarket_con_sesion_regular():
+    cfg = _config_3bp(bp34_entradas_solo_sesion_regular=True)
+    premarket = datetime(2026, 1, 2, 14, 0)  # 9:00 NY (EST)
+    assert walker_3bp.evento_en_ventana_permitida(premarket, cfg) is False
+
+
+def test_evento_en_ventana_permitida_acepta_sesion_regular_sin_ventana_acotada():
+    cfg = _config_3bp(bp34_entradas_solo_sesion_regular=True)  # ventana=0 = toda la sesión
+    a_las_10 = datetime(2026, 1, 2, 15, 0)  # 10:00 NY (EST)
+    assert walker_3bp.evento_en_ventana_permitida(a_las_10, cfg) is True
+
+
+def test_evento_en_ventana_permitida_descarta_after_hours_con_sesion_regular():
+    cfg = _config_3bp(bp34_entradas_solo_sesion_regular=True)
+    after_hours = datetime(2026, 1, 2, 21, 30)  # 16:30 NY (EST)
+    assert walker_3bp.evento_en_ventana_permitida(after_hours, cfg) is False
+
+
+def test_evento_en_ventana_permitida_respeta_la_ventana_acotada():
+    cfg = _config_3bp(bp34_entradas_solo_sesion_regular=True, bp34_ventana_entrada_minutos=90)
+    dentro = datetime(2026, 1, 2, 15, 59)   # 10:59 NY, dentro de 9:30-11:00
+    fuera = datetime(2026, 1, 2, 16, 1)     # 11:01 NY, fuera de la ventana
+    assert walker_3bp.evento_en_ventana_permitida(dentro, cfg) is True
+    assert walker_3bp.evento_en_ventana_permitida(fuera, cfg) is False

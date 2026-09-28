@@ -31,8 +31,9 @@ forzado a las 15:55 NY (misma regla que simulator.py, reusada — no
 reimplementada).
 """
 
-from datetime import date
+from datetime import date, datetime, timezone
 from typing import Optional
+from zoneinfo import ZoneInfo
 
 import polars as pl
 
@@ -60,6 +61,37 @@ def _minutos_ny_expr() -> pl.Expr:
     convertir, nunca leer la hora tal cual."""
     ts = pl.col("timestamp").dt.replace_time_zone("UTC").dt.convert_time_zone("America/New_York")
     return ts.dt.hour().cast(pl.Int32) * 60 + ts.dt.minute().cast(pl.Int32)
+
+
+_NY_TZ = ZoneInfo("America/New_York")
+
+
+def minutos_desde_apertura_ny(ts: datetime) -> int:
+    """Minutos desde las 9:30 NY del timestamp dado (naive pero UTC, mismo
+    contrato que el resto del sistema) — negativo si es antes de la apertura.
+    Versión escalar de _minutos_ny_expr(), para usar fuera de un DataFrame
+    (ej. el wireo en vivo, main.py::_on_evento_3bp)."""
+    ts_ny = ts.replace(tzinfo=timezone.utc).astimezone(_NY_TZ)
+    return ts_ny.hour * 60 + ts_ny.minute - _APERTURA_NY_MIN
+
+
+def evento_en_ventana_permitida(ts: datetime, config: ScanConfig) -> bool:
+    """True si `config.bp34_entradas_solo_sesion_regular` está desactivado
+    (sin restricción), o si `ts` cae dentro de la sesión regular (9:30-16:00
+    NY) y, si se configuró `bp34_ventana_entrada_minutos` > 0, dentro de esa
+    ventana desde la apertura. Comparte semántica exacta con el filtro que
+    aplica el walker de backtest (`_caminar_dia`/`entradas_desde`/
+    `entradas_hasta`) — usada también por el wireo en vivo (`main.py::
+    _on_evento_3bp`) para que lo que se persiste en vivo sea comparable a lo
+    calibrado, en vez de aceptar entradas a cualquier hora."""
+    if not config.bp34_entradas_solo_sesion_regular:
+        return True
+    minutos = minutos_desde_apertura_ny(ts)
+    if minutos < 0 or minutos >= (_CIERRE_NY_MIN - _APERTURA_NY_MIN):
+        return False
+    if config.bp34_ventana_entrada_minutos > 0 and minutos >= config.bp34_ventana_entrada_minutos:
+        return False
+    return True
 
 
 def _filtrar_contexto_y_sesion(df: pl.DataFrame) -> pl.DataFrame:

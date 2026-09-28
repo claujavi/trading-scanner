@@ -151,7 +151,14 @@ class StreamManager(BaseStreamManager):
             if not ticker:
                 continue
             vela = Vela(
-                timestamp=datetime.fromtimestamp(item["CHART_TIME_MILLIS"] / 1000),
+                # utcfromtimestamp, NO fromtimestamp: CHART_TIME_MILLIS es un
+                # epoch UTC — fromtimestamp() lo convierte con la hora LOCAL
+                # del sistema (ver bug real encontrado 2026-09-28: esta PC
+                # corre en horario de Argentina, UTC-3, lo que desplazaba el
+                # timestamp guardado 3 horas respecto al instante UTC real que
+                # el resto del sistema asume — history_cache/schwab_history
+                # sí lo hacen bien, ver CLAUDE.md "timestamps naive pero UTC").
+                timestamp=datetime.utcfromtimestamp(item["CHART_TIME_MILLIS"] / 1000),
                 open=float(item["OPEN_PRICE"]),
                 high=float(item["HIGH_PRICE"]),
                 low=float(item["LOW_PRICE"]),

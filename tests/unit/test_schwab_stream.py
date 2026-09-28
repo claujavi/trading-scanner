@@ -262,3 +262,33 @@ def test_despachar_eventos_3bp_es_no_op_sin_callback():
         assert cache._eventos_3bp_pendientes == [("AAPL", "5m", evento)]
 
     asyncio.run(body())
+
+
+# ── _on_chart_equity: timestamp debe ser UTC, no hora local del sistema ────
+
+
+def test_on_chart_equity_convierte_epoch_a_utc_no_hora_local():
+    """Bug real encontrado 2026-09-28: datetime.fromtimestamp() usaba la hora
+    LOCAL del sistema (esta PC corre en Argentina, UTC-3) para un epoch que
+    Schwab manda en UTC — desplazaba el timestamp guardado ~3 horas respecto
+    al instante real. El resto del sistema (schwab_history.py, docs/CLAUDE.md)
+    asume "naive pero UTC" en todos lados; este test verifica el mismo
+    contrato acá, independientemente de en qué huso horario corra la máquina
+    que ejecuta el test."""
+    cache = _cache_con_ticker("AAPL")
+    velas_recibidas = []
+    cache.actualizar_vela_1m = lambda ticker, vela_1m: velas_recibidas.append(vela_1m) or False
+
+    manager = StreamManager(cache, on_evento=lambda t: None)
+    # 2026-09-23 13:31:00 UTC, en milisegundos — instante fijo, no depende del reloj local
+    epoch_ms = 1790170260000
+    manager._on_chart_equity({
+        "content": [{
+            "key": "AAPL", "CHART_TIME_MILLIS": epoch_ms,
+            "OPEN_PRICE": 10.0, "HIGH_PRICE": 10.5, "LOW_PRICE": 9.8, "CLOSE_PRICE": 10.2,
+            "VOLUME": 1000.0,
+        }]
+    })
+
+    assert len(velas_recibidas) == 1
+    assert velas_recibidas[0].timestamp == datetime(2026, 9, 23, 13, 31, 0)
