@@ -1,6 +1,9 @@
-from datetime import datetime, timedelta
+from datetime import date, datetime, timedelta
+
+import pytest
 
 from src.trading_scanner.engine.pattern_3bp import Detector3BP, Estado3BP, VelaPattern
+from src.trading_scanner.models import ResultadoBp34
 
 _T0 = datetime(2026, 7, 31, 9, 30)
 
@@ -240,3 +243,119 @@ def test_tier_sin_confirmar_si_no_se_provee_volumen_promedio():
 
     assert evento.estado == Estado3BP.ENTRADA
     assert evento.tier == "sin_confirmar"
+
+
+# ── SeguidorPosicion3BP — seguimiento en vivo, vela a vela ────────────────
+# Misma semántica que backtest/walker_3bp.py::_resolver_entrada, pero
+# alimentada una vela por vez en vez de recibir de una sola vez todas las
+# velas futuras del día. `_T_NY` son timestamps UTC reales (no los índices
+# relativos de _v() de arriba) porque acá sí importa la hora NY real.
+
+from src.trading_scanner.engine.pattern_3bp import SeguidorPosicion3BP, fecha_ny, minutos_desde_apertura_ny  # noqa: E402
+
+_APERTURA_UTC = datetime(2026, 1, 2, 14, 30)  # 9:30 NY (EST, UTC-5) del 2026-01-02
+_FECHA = fecha_ny(_APERTURA_UTC)
+
+
+def _vp(minutos_desde_apertura: int, high: float, low: float, close: float) -> VelaPattern:
+    ts = _APERTURA_UTC + timedelta(minutes=minutos_desde_apertura)
+    return VelaPattern(timestamp=ts, high=high, low=low, close=close, volume=1000.0)
+
+
+def _seguidor(**overrides) -> SeguidorPosicion3BP:
+    base = dict(ticker="AAPL", timeframe="5m", fecha=_FECHA, entry=10.0, stop=9.0, target=12.0, slippage_bps=0.0)
+    base.update(overrides)
+    return SeguidorPosicion3BP(**base)
+
+
+def test_minutos_desde_apertura_ny_en_la_apertura():
+    assert minutos_desde_apertura_ny(_APERTURA_UTC) == 0
+
+
+def test_fecha_ny_devuelve_la_fecha_de_trading():
+    assert fecha_ny(_APERTURA_UTC) == date(2026, 1, 2)
+
+
+def test_seguidor_toca_target():
+    seg = _seguidor()
+    r = seg.procesar_vela(_vp(5, high=12.5, low=11.0, close=12.2))
+
+    assert r is not None
+    resultado, resultado_r, mfe_r, mae_r, tiempo = r
+    assert resultado == ResultadoBp34.TARGET
+    assert resultado_r == 2.0  # target_r = (12-10)/(10-9)
+    assert mfe_r == pytest.approx(2.5)
+    assert tiempo == 0  # se resolvió en la primera vela vista
+    assert seg.resuelto is True
+
+
+def test_seguidor_toca_stop():
+    seg = _seguidor()
+    r = seg.procesar_vela(_vp(5, high=10.2, low=8.5, close=9.0))
+
+    assert r[0] == ResultadoBp34.STOP
+    assert r[1] == -1.0
+
+
+def test_seguidor_ambos_en_la_misma_vela_gana_el_stop():
+    seg = _seguidor()
+    r = seg.procesar_vela(_vp(5, high=15.0, low=8.5, close=9.0))
+    assert r[0] == ResultadoBp34.STOP
+
+
+def test_seguidor_acumula_mfe_mae_a_traves_de_varias_velas():
+    seg = _seguidor(target=20.0)  # target lejos, no se toca en este test
+    assert seg.procesar_vela(_vp(0, high=10.5, low=9.5, close=10.2)) is None
+    assert seg.procesar_vela(_vp(5, high=11.5, low=9.8, close=11.0)) is None
+    r = seg.procesar_vela(_vp(10, high=10.8, low=8.2, close=9.0))  # ahora sí toca el stop (low<=9.0)
+
+    assert r[0] == ResultadoBp34.STOP
+    assert r[2] == pytest.approx(1.5)   # mfe: max((11.5-10)/1, ...) = 1.5
+    assert r[3] == pytest.approx(-1.8)  # mae: min((8.2-10)/1, ...) = -1.8
+    assert r[4] == 10  # tercera vela vista (índice 2) * 5 min
+
+
+def test_seguidor_cierre_forzado_a_las_15_55_ny_usa_el_cierre_de_la_ultima_vela():
+    seg = _seguidor(target=100.0)  # jamás se toca
+    minutos_a_las_1550 = 385 - 5  # 15:50 NY, última vela normal antes del cierre
+    assert seg.procesar_vela(_vp(minutos_a_las_1550, high=10.2, low=9.8, close=10.1)) is None
+    # la siguiente (15:55) es la última permitida — no toca nada, cierra forzado con SU close
+    r = seg.procesar_vela(_vp(385, high=10.3, low=9.9, close=10.15))
+
+    assert r[0] == ResultadoBp34.SIN_DEFINIR
+    assert r[1] == pytest.approx(0.15)  # (10.15-10)/1
+    assert seg.resuelto is True
+
+
+def test_seguidor_vela_de_otro_dia_fuerza_cierre_con_la_ultima_vela_valida():
+    seg = _seguidor(target=100.0)
+    seg.procesar_vela(_vp(5, high=10.3, low=9.9, close=10.1))
+    manana = VelaPattern(timestamp=_APERTURA_UTC + timedelta(days=1, minutes=5), high=11.0, low=10.0, close=10.5, volume=1000.0)
+
+    r = seg.procesar_vela(manana)
+    assert r[0] == ResultadoBp34.SIN_DEFINIR
+    assert r[1] == pytest.approx(0.1)  # cierre de la vela de HOY (10.1), no de la de mañana
+
+
+def test_seguidor_sin_ninguna_vela_valida_cierra_en_cero():
+    """Caso raro: la reconciliación tras un reinicio no encuentra ninguna
+    vela del día (ej. Schwab sin historial ese día) — no hay dato real."""
+    seg = _seguidor()
+    otro_dia = VelaPattern(timestamp=_APERTURA_UTC + timedelta(days=1), high=10.0, low=10.0, close=10.0, volume=1000.0)
+
+    r = seg.procesar_vela(otro_dia)
+    assert r == (ResultadoBp34.SIN_DEFINIR, 0.0, 0.0, 0.0, 0)
+
+
+def test_seguidor_ya_resuelto_no_hace_nada_en_llamadas_posteriores():
+    seg = _seguidor()
+    seg.procesar_vela(_vp(5, high=12.5, low=11.0, close=12.2))  # resuelve por target
+    assert seg.procesar_vela(_vp(10, high=999.0, low=0.01, close=500.0)) is None
+
+
+def test_seguidor_aplica_slippage_igual_que_resolver_entrada():
+    # mismo ejemplo que test_slippage_en_stop_pierde_mas_de_1r de test_walker_3bp.py
+    seg = _seguidor(slippage_bps=10.0)
+    r = seg.procesar_vela(_vp(5, high=10.2, low=8.5, close=9.0))
+    assert r[0] == ResultadoBp34.STOP
+    assert r[1] == pytest.approx(-1.019)

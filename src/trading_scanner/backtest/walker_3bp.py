@@ -31,13 +31,17 @@ forzado a las 15:55 NY (misma regla que simulator.py, reusada — no
 reimplementada).
 """
 
-from datetime import date, datetime, timezone
+from datetime import date, datetime
 from typing import Optional
-from zoneinfo import ZoneInfo
 
 import polars as pl
 
-from ..engine.pattern_3bp import Estado3BP
+from ..engine.pattern_3bp import (
+    _APERTURA_NY_MIN,
+    _CIERRE_NY_MIN,
+    Estado3BP,
+    minutos_desde_apertura_ny,
+)
 from ..fetchers import history_cache
 from ..fetchers.market_data_cache import Vela, _a_vela_pattern, _crear_detector_3bp
 from ..logging_setup import console
@@ -47,8 +51,6 @@ from .simulator import _truncar_a_cierre_forzado
 
 _MINUTOS_POR_TIMEFRAME = {"5m": 5, "15m": 15}
 
-_APERTURA_NY_MIN = 9 * 60 + 30   # 9:30
-_CIERRE_NY_MIN = 16 * 60         # 16:00 (exclusivo)
 _INICIO_CONTEXTO_NY_MIN = 4 * 60  # 4:00: inicio del pre-market, desde acá se alimenta el detector
 
 _ATR_ALPHA = 1.0 / 14  # mismo período fijo que market_data_cache._atr14_de_velas
@@ -61,18 +63,6 @@ def _minutos_ny_expr() -> pl.Expr:
     convertir, nunca leer la hora tal cual."""
     ts = pl.col("timestamp").dt.replace_time_zone("UTC").dt.convert_time_zone("America/New_York")
     return ts.dt.hour().cast(pl.Int32) * 60 + ts.dt.minute().cast(pl.Int32)
-
-
-_NY_TZ = ZoneInfo("America/New_York")
-
-
-def minutos_desde_apertura_ny(ts: datetime) -> int:
-    """Minutos desde las 9:30 NY del timestamp dado (naive pero UTC, mismo
-    contrato que el resto del sistema) — negativo si es antes de la apertura.
-    Versión escalar de _minutos_ny_expr(), para usar fuera de un DataFrame
-    (ej. el wireo en vivo, main.py::_on_evento_3bp)."""
-    ts_ny = ts.replace(tzinfo=timezone.utc).astimezone(_NY_TZ)
-    return ts_ny.hour * 60 + ts_ny.minute - _APERTURA_NY_MIN
 
 
 def evento_en_ventana_permitida(ts: datetime, config: ScanConfig) -> bool:

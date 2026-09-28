@@ -34,9 +34,11 @@ from .api.schwab import router as schwab_router
 from .api.settings import router as settings_router
 from .api.stream import router as stream_router
 from .api.ticker import router as ticker_router
-from .backtest.walker_3bp import evento_en_ventana_permitida
+from .backtest.walker_3bp import _df_a_velas, evento_en_ventana_permitida
 from .config import settings
 from .database import db
+from .engine.pattern_3bp import SeguidorPosicion3BP, fecha_ny
+from .fetchers import history_cache
 from .fetchers.market_data_cache import MarketDataCache
 from .fetchers.schwab_client import estado_conexion
 from .fetchers.schwab_stream import crear_stream_manager
@@ -123,17 +125,18 @@ async def lifespan(app: FastAPI):
                 cache_ticker.ultima_clasificacion = result.clasificacion
             cache_ticker.ultima_evaluacion = datetime.utcnow()
 
-    async def _on_evento_3bp(ticker: str, timeframe: str, evento) -> None:
-        """Persiste un evento ENTRADA del módulo 3BP/4BP en vivo — cierra
-        el gap documentado en docs/spec_modulo_3bp_4bp.md sección 6 (modo
-        shadow): antes de esto, el evento solo vivía en memoria
-        (TickerCache.ultimo_evento_3bp_5m/_15m), sin persistirse ni
-        mostrarse en ningún lado. MVP deliberado: solo registra la entrada
-        (fuente=LIVE, resultado=ABIERTO) — el seguimiento del resultado
-        real (tocó target/stop) todavía no está implementado en vivo, a
-        diferencia del backtest (walker_3bp.py, que sí sigue el precio
-        histórico post-señal). Nunca bloquea ni rompe el stream: cualquier
-        error de persistencia se loguea y se descarta."""
+    async def _on_evento_3bp(ticker: str, timeframe: str, evento, vela) -> None:
+        """Persiste un evento ENTRADA del módulo 3BP/4BP en vivo y engancha
+        su seguimiento (SeguidorPosicion3BP) para resolver target/stop/cierre
+        forzado a medida que lleguen las próximas velas — cierra el gap
+        documentado en docs/spec_modulo_3bp_4bp.md sección 6 (modo shadow):
+        antes de esto la entrada quedaba ABIERTO para siempre, sin que nada
+        siguiera el precio real post-señal (a diferencia del backtest,
+        walker_3bp.py, que sí lo hace de una sola vez con todo el historial
+        disponible). `vela` es la misma vela gatillo que disparó la entrada —
+        se alimenta primero, por si ya tocó target o stop en esa misma barra.
+        Nunca bloquea ni rompe el stream: cualquier error se loguea y se
+        descarta."""
         try:
             config = await get_active_config()
             if (evento.entry - evento.stop) / evento.entry * 100 < config.bp34_stop_min_pct:
@@ -141,27 +144,121 @@ async def lifespan(app: FastAPI):
             if not evento_en_ventana_permitida(evento.timestamp, config):
                 return  # fuera de la ventana de sesión calibrada (bp34_entradas_solo_sesion_regular)
             target_r = getattr(config, f"bp34_target_r_{timeframe}")
+            target = evento.entry + (evento.entry - evento.stop) * target_r
             evento_bp34 = Bp34Evento(
                 ticker=ticker,
                 timeframe=timeframe,
-                fecha=date.today(),
+                fecha=fecha_ny(evento.timestamp),
                 timestamp=evento.timestamp,
                 fuente=FuenteDatos.LIVE,
                 tipo=evento.tipo,
                 tier=evento.tier,
                 entry=evento.entry,
                 stop=evento.stop,
-                target=evento.entry + (evento.entry - evento.stop) * target_r,
+                target=target,
                 barra1_wrb_ratio=evento.barra1_wrb_ratio,
                 config_snapshot=config.model_dump(mode="json"),
             )
-            await db.insert_bp34_evento(evento_bp34)
+            evento_id = await db.insert_bp34_evento(evento_bp34)
             console.log(
                 f"[cyan]3BP: {ticker} ({timeframe}) entrada {evento.tipo} "
                 f"tier={evento.tier} entry={evento.entry:.2f} stop={evento.stop:.2f}[/cyan]"
             )
+
+            seguidor = SeguidorPosicion3BP(
+                ticker=ticker, timeframe=timeframe, fecha=evento_bp34.fecha,
+                entry=evento.entry, stop=evento.stop, target=target,
+                slippage_bps=config.slippage_bps,
+            )
+            resultado_inmediato = seguidor.procesar_vela(vela)
+            if resultado_inmediato is not None:
+                await _persistir_resolucion_3bp(evento_id, ticker, timeframe, resultado_inmediato)
+            else:
+                app.state.market_cache.agregar_posicion_3bp_abierta(ticker, evento_id, seguidor)
         except Exception as exc:
             console.log(f"[red]Error persistiendo evento 3BP de {ticker}: {exc}[/red]")
+
+    async def _persistir_resolucion_3bp(evento_id: int, ticker: str, timeframe: str, resultado_tuple) -> None:
+        resultado, resultado_r, mfe_r, mae_r, tiempo = resultado_tuple
+        try:
+            await db.update_bp34_evento_resultado(evento_id, resultado.value, resultado_r, mfe_r, mae_r, tiempo)
+            console.log(
+                f"[cyan]3BP: {ticker} ({timeframe}) posición resuelta -> "
+                f"{resultado.value} ({resultado_r:+.2f}R, {tiempo}min)[/cyan]"
+            )
+        except Exception as exc:
+            console.log(f"[red]Error actualizando resultado 3BP de {ticker}: {exc}[/red]")
+
+    async def _on_resolucion_3bp(
+        evento_id: int, ticker: str, timeframe: str, resultado, resultado_r: float,
+        mfe_r: float, mae_r: float, tiempo: int,
+    ) -> None:
+        await _persistir_resolucion_3bp(evento_id, ticker, timeframe, (resultado, resultado_r, mfe_r, mae_r, tiempo))
+
+    async def _reconciliar_posiciones_3bp(tickers: list[str]) -> None:
+        """Tras (re)suscribir estos tickers —nuevo CSV, o reconexión manual
+        del stream después de reiniciar el servidor (POST /stream/start)—
+        busca en Turso sus propias entradas 3BP/4BP que hayan quedado
+        ABIERTO: pudo pasar si el servidor se cayó a mitad de sesión y nunca
+        llegó a verlas resolverse. Las resuelve con el historial real de
+        Schwab de ese día (SeguidorPosicion3BP alimentado de una sola vez con
+        todas las velas ya transcurridas — misma clase, mismo método
+        procesar_vela, que el seguimiento genuinamente en vivo). 3BP nunca
+        sostiene una posición de un día para el otro, así que esto siempre
+        alcanza para resolver del todo cualquier entrada de un día anterior;
+        si sigue sin resolver, solo puede ser porque `evento.fecha` es HOY y
+        la sesión sigue abierta — en ese caso queda re-enganchada al
+        seguimiento en vivo normal. Nunca bloquea el arranque ni la
+        suscripción: cualquier error se loguea y se sigue con el resto.
+
+        Limitación conocida: solo reconcilia los tickers que se están
+        (re)suscribiendo acá — un ticker con una posición abierta que no
+        vuelva a aparecer en un CSV ni en /stream/start no se reconcilia
+        solo. Aceptable en el uso normal (el servidor no debería estar
+        caído mucho tiempo, y /stream/start ya resuscribe todo lo del
+        scan de hoy)."""
+        for ticker in tickers:
+            try:
+                abiertos = await db.get_bp34_eventos_abiertos(ticker)
+            except Exception:
+                continue
+            for row in abiertos:
+                try:
+                    await _reconciliar_una_posicion_3bp(ticker, row)
+                except Exception as exc:
+                    console.log(f"[yellow]No se pudo reconciliar posición 3BP abierta de {ticker}: {exc}[/yellow]")
+
+    async def _reconciliar_una_posicion_3bp(ticker: str, row: dict) -> None:
+        snap = row.get("config_snapshot", "{}")
+        config_snapshot = json.loads(snap) if isinstance(snap, str) else snap
+        evento = Bp34Evento(**{**row, "config_snapshot": config_snapshot})
+
+        df = await history_cache.get_history(ticker, evento.timeframe, evento.fecha, date.today())
+        df = history_cache.filter_range(df, evento.fecha, evento.fecha)  # 3BP nunca sostiene overnight
+        velas_desde_entrada = [v for v in _df_a_velas(df) if v.timestamp >= evento.timestamp]
+
+        seguidor = SeguidorPosicion3BP(
+            ticker=ticker, timeframe=evento.timeframe, fecha=evento.fecha,
+            entry=evento.entry, stop=evento.stop, target=evento.target,
+            slippage_bps=config_snapshot.get("slippage_bps", 0.0),
+        )
+
+        resultado_final = None
+        for v in velas_desde_entrada:
+            resultado_final = seguidor.procesar_vela(v)
+            if resultado_final is not None:
+                break
+
+        if resultado_final is not None:
+            await _persistir_resolucion_3bp(evento.id, ticker, evento.timeframe, resultado_final)
+            console.log(f"[cyan]3BP: {ticker} ({evento.timeframe}) posición reconciliada tras reinicio[/cyan]")
+        elif app.state.market_cache.agregar_posicion_3bp_abierta(ticker, evento.id, seguidor):
+            console.log(f"[cyan]3BP: {ticker} ({evento.timeframe}) posición sigue abierta, re-enganchada al stream[/cyan]")
+        else:
+            console.log(
+                f"[yellow]3BP: {ticker} ({evento.timeframe}) posición sigue abierta pero el ticker "
+                "no está en el cache — no se pudo re-enganchar[/yellow]"
+            )
 
     async def _procesar_y_conectar_stream(tickers):
         """Corre el pipeline pre-market (sembrando el cache) y arranca o
@@ -176,9 +273,15 @@ async def lifespan(app: FastAPI):
         app.state.latest_results = results
 
         nombres = [t.ticker for t in tickers]
+        # Después de sembrar el cache (ya hay un TickerCache por cada uno de
+        # estos tickers) pero antes de arrancar/extender el stream — así,
+        # para cuando lleguen las primeras velas, cualquier posición que
+        # siga abierta ya está enganchada y lista para seguir resolviéndose.
+        await _reconciliar_posiciones_3bp(nombres)
+
         if app.state.stream_manager is None:
             app.state.stream_manager = crear_stream_manager(
-                app.state.market_cache, _on_evento_significativo, _on_evento_3bp
+                app.state.market_cache, _on_evento_significativo, _on_evento_3bp, _on_resolucion_3bp
             )
             await app.state.stream_manager.start(nombres)
         else:

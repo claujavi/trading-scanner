@@ -28,7 +28,7 @@ from typing import Optional
 import polars as pl
 
 from ..engine.evaluator import DatosTickerCompletos
-from ..engine.pattern_3bp import Detector3BP, Estado3BP, EventoPatron3BP, VelaPattern
+from ..engine.pattern_3bp import Detector3BP, Estado3BP, EventoPatron3BP, SeguidorPosicion3BP, VelaPattern
 from ..fetchers.calendar_client import CalendarWarning
 from ..indicators.trend import detect_cruce_ema
 from ..indicators.volume import calc_atr
@@ -104,6 +104,12 @@ class TickerCache:
     detector_3bp_15m: Optional[Detector3BP] = None
     ultimo_evento_3bp_5m: Optional[EventoPatron3BP] = None
     ultimo_evento_3bp_15m: Optional[EventoPatron3BP] = None
+    # Entradas 3BP/4BP ya aceptadas y persistidas (resultado=ABIERTO en Turso)
+    # que siguen sin resolver — (id de la fila en bp34_eventos, seguidor). Se
+    # alimentan con cada vela nueva que cierra para ese ticker/timeframe (ver
+    # MarketDataCache._resolver_posiciones_abiertas) hasta tocar target, stop,
+    # o el cierre forzado del día (SeguidorPosicion3BP se encarga de eso).
+    posiciones_3bp_abiertas: list[tuple[int, SeguidorPosicion3BP]] = field(default_factory=list)
 
     # ── Última evaluación disparada por un evento significativo ─────────────
     ultimo_score_day: float = 0.0
@@ -243,14 +249,43 @@ class MarketDataCache:
         # este caché es su propia cola, drenada por el stream manager
         # (schwab_stream.py::_despachar_eventos_3bp) para persistir sin
         # bloquear el hot path síncrono de actualizar_vela_1m().
-        self._eventos_3bp_pendientes: list[tuple[str, str, EventoPatron3BP]] = []
+        self._eventos_3bp_pendientes: list[tuple[str, str, EventoPatron3BP, Vela]] = []
+        # Resoluciones (target/stop/cierre forzado) de posiciones 3BP/4BP que
+        # ya estaban abiertas — misma cola/drenaje que _eventos_3bp_pendientes,
+        # pero para el UPDATE en vez del INSERT (ver main.py::_on_resolucion_3bp).
+        self._resoluciones_3bp_pendientes: list[tuple] = []
 
-    def drenar_eventos_3bp(self) -> list[tuple[str, str, EventoPatron3BP]]:
-        """Devuelve y vacía la cola de eventos ENTRADA de 3BP/4BP
-        acumulados desde el último drenaje — (ticker, timeframe, evento)."""
+    def drenar_eventos_3bp(self) -> list[tuple[str, str, EventoPatron3BP, Vela]]:
+        """Devuelve y vacía la cola de eventos ENTRADA de 3BP/4BP acumulados
+        desde el último drenaje — (ticker, timeframe, evento, vela_gatillo).
+        `vela_gatillo` es la misma vela que disparó la ENTRADA — hace falta
+        para sembrar el seguimiento de la posición (podría, en esa misma
+        vela, ya haber tocado target o stop)."""
         eventos = self._eventos_3bp_pendientes
         self._eventos_3bp_pendientes = []
         return eventos
+
+    def drenar_resoluciones_3bp(self) -> list[tuple]:
+        """Devuelve y vacía la cola de resoluciones (target/stop/cierre
+        forzado) de posiciones 3BP/4BP ya abiertas — (evento_id, ticker,
+        timeframe, resultado, resultado_r, mfe_r, mae_r, tiempo_minutos)."""
+        resoluciones = self._resoluciones_3bp_pendientes
+        self._resoluciones_3bp_pendientes = []
+        return resoluciones
+
+    def agregar_posicion_3bp_abierta(self, ticker: str, evento_id: int, seguidor: SeguidorPosicion3BP) -> bool:
+        """Engancha una posición 3BP/4BP (ya persistida con resultado=ABIERTO)
+        al seguimiento en vivo, para que la próxima vela que cierre de ese
+        ticker/timeframe la alimente. Usado tanto por `_on_evento_3bp` (recién
+        aceptada) como por la reconciliación al reconectar el stream (posición
+        que venía de un reinicio del servidor y seguía sin resolver). Devuelve
+        False si el ticker no está (todavía) en el cache — el caller decide
+        qué hacer (loguear, reintentar, etc.)."""
+        cache_ticker = self._tickers.get(ticker)
+        if cache_ticker is None:
+            return False
+        cache_ticker.posiciones_3bp_abiertas.append((evento_id, seguidor))
+        return True
 
     def tiene(self, ticker: str) -> bool:
         return ticker in self._tickers
@@ -405,6 +440,12 @@ class MarketDataCache:
         if not cerro or vela_cerrada is None:
             return
 
+        # Alimenta las posiciones ya abiertas de este ticker/timeframe con la
+        # vela recién cerrada — independiente de si el detector tiene o no
+        # suficiente contexto de ATR (son cosas separadas: seguir una posición
+        # ya aceptada no depende de si hoy se puede detectar una señal nueva).
+        self._resolver_posiciones_abiertas(cache, timeframe, vela_cerrada)
+
         # `serie` en este punto = [...cerradas..., vela_cerrada, nueva_parcial]
         contexto = serie[:-1]  # todas las cerradas, incluida la recién cerrada
         atr14 = _atr14_de_velas(contexto)
@@ -419,7 +460,25 @@ class MarketDataCache:
             else:
                 cache.ultimo_evento_3bp_15m = evento
             if evento.estado == Estado3BP.ENTRADA:
-                self._eventos_3bp_pendientes.append((cache.ticker, timeframe, evento))
+                self._eventos_3bp_pendientes.append((cache.ticker, timeframe, evento, vela_cerrada))
+
+    def _resolver_posiciones_abiertas(self, cache: TickerCache, timeframe: str, vela_cerrada: Vela) -> None:
+        if not cache.posiciones_3bp_abiertas:
+            return
+        restantes: list[tuple[int, SeguidorPosicion3BP]] = []
+        for evento_id, seguidor in cache.posiciones_3bp_abiertas:
+            if seguidor.timeframe != timeframe:
+                restantes.append((evento_id, seguidor))
+                continue
+            resultado = seguidor.procesar_vela(vela_cerrada)
+            if resultado is None:
+                restantes.append((evento_id, seguidor))
+            else:
+                r, r_r, mfe_r, mae_r, tiempo = resultado
+                self._resoluciones_3bp_pendientes.append(
+                    (evento_id, cache.ticker, timeframe, r, r_r, mfe_r, mae_r, tiempo)
+                )
+        cache.posiciones_3bp_abiertas = restantes
 
     def snapshot(self, ticker: str) -> Optional[DatosTickerCompletos]:
         cache = self._tickers.get(ticker)

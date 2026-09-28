@@ -2,7 +2,7 @@ import asyncio
 from datetime import datetime
 
 from trading_scanner.fetchers.calendar_client import CalendarWarning
-from trading_scanner.fetchers.market_data_cache import MarketDataCache
+from trading_scanner.fetchers.market_data_cache import MarketDataCache, Vela
 from trading_scanner.fetchers.schwab_stream import BACKOFF_MAX_S, MockStreamManager, StreamManager
 from trading_scanner.models import ScanConfig, TickerBasico
 
@@ -203,12 +203,16 @@ def test_stream_manager_real_acepta_on_evento_3bp():
     async def on_evento(ticker: str):
         pass
 
-    async def on_evento_3bp(ticker: str, timeframe: str, evento):
+    async def on_evento_3bp(ticker: str, timeframe: str, evento, vela):
+        pass
+
+    async def on_resolucion_3bp(evento_id, ticker, timeframe, resultado, resultado_r, mfe_r, mae_r, tiempo):
         pass
 
     cache = _cache_con_ticker()
-    mgr = StreamManager(cache, on_evento, on_evento_3bp)
+    mgr = StreamManager(cache, on_evento, on_evento_3bp, on_resolucion_3bp)
     assert mgr._on_evento_3bp is on_evento_3bp
+    assert mgr._on_resolucion_3bp is on_resolucion_3bp
 
 
 # ── _despachar_eventos_3bp — cola de eventos ENTRADA del módulo 3BP/4BP ────
@@ -223,13 +227,15 @@ def test_despachar_eventos_3bp_agenda_una_tarea_por_evento_y_vacia_la_cola():
         async def on_evento(ticker: str):
             pass
 
-        async def on_evento_3bp(ticker: str, timeframe: str, evento):
-            llamados.append((ticker, timeframe, evento))
+        async def on_evento_3bp(ticker: str, timeframe: str, evento, vela):
+            llamados.append((ticker, timeframe, evento, vela))
 
         cache = _cache_con_ticker("AAPL")
         evento1 = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=datetime(2026, 1, 2, 9, 35), tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
         evento2 = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=datetime(2026, 1, 2, 9, 50), tipo="4BP", entry=20.0, stop=19.0, tier="sin_confirmar")
-        cache._eventos_3bp_pendientes = [("AAPL", "5m", evento1), ("AAPL", "15m", evento2)]
+        vela1 = Vela(datetime(2026, 1, 2, 9, 35), 10.0, 10.2, 9.8, 10.0, 1000.0)
+        vela2 = Vela(datetime(2026, 1, 2, 9, 50), 20.0, 20.2, 19.8, 20.0, 1000.0)
+        cache._eventos_3bp_pendientes = [("AAPL", "5m", evento1, vela1), ("AAPL", "15m", evento2, vela2)]
 
         mgr = MockStreamManager(cache, on_evento, on_evento_3bp=on_evento_3bp)
         mgr._despachar_eventos_3bp()
@@ -253,13 +259,14 @@ def test_despachar_eventos_3bp_es_no_op_sin_callback():
 
         cache = _cache_con_ticker("AAPL")
         evento = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=datetime(2026, 1, 2, 9, 35), tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
-        cache._eventos_3bp_pendientes = [("AAPL", "5m", evento)]
+        vela = Vela(datetime(2026, 1, 2, 9, 35), 10.0, 10.2, 9.8, 10.0, 1000.0)
+        cache._eventos_3bp_pendientes = [("AAPL", "5m", evento, vela)]
 
         mgr = MockStreamManager(cache, on_evento)  # on_evento_3bp=None (default)
         mgr._despachar_eventos_3bp()
 
         # sin callback, no se drena — no hay a quién avisar
-        assert cache._eventos_3bp_pendientes == [("AAPL", "5m", evento)]
+        assert cache._eventos_3bp_pendientes == [("AAPL", "5m", evento, vela)]
 
     asyncio.run(body())
 
@@ -292,3 +299,49 @@ def test_on_chart_equity_convierte_epoch_a_utc_no_hora_local():
 
     assert len(velas_recibidas) == 1
     assert velas_recibidas[0].timestamp == datetime(2026, 9, 23, 13, 31, 0)
+
+
+def test_despachar_resoluciones_3bp_agenda_una_tarea_por_resolucion_y_vacia_la_cola():
+    async def body():
+        from trading_scanner.models import ResultadoBp34
+
+        llamados = []
+
+        async def on_evento(ticker: str):
+            pass
+
+        async def on_resolucion_3bp(evento_id, ticker, timeframe, resultado, resultado_r, mfe_r, mae_r, tiempo):
+            llamados.append((evento_id, ticker, timeframe, resultado, resultado_r, mfe_r, mae_r, tiempo))
+
+        cache = _cache_con_ticker("AAPL")
+        cache._resoluciones_3bp_pendientes = [
+            (1, "AAPL", "5m", ResultadoBp34.TARGET, 2.0, 2.5, -0.3, 15),
+        ]
+
+        mgr = MockStreamManager(cache, on_evento, on_resolucion_3bp=on_resolucion_3bp)
+        mgr._despachar_resoluciones_3bp()
+
+        assert cache._resoluciones_3bp_pendientes == []  # drenada
+        await asyncio.sleep(0)
+
+        assert llamados == [(1, "AAPL", "5m", ResultadoBp34.TARGET, 2.0, 2.5, -0.3, 15)]
+
+    asyncio.run(body())
+
+
+def test_despachar_resoluciones_3bp_es_no_op_sin_callback():
+    async def body():
+        from trading_scanner.models import ResultadoBp34
+
+        async def on_evento(ticker: str):
+            pass
+
+        cache = _cache_con_ticker("AAPL")
+        cache._resoluciones_3bp_pendientes = [(1, "AAPL", "5m", ResultadoBp34.STOP, -1.0, 0.5, -1.0, 5)]
+
+        mgr = MockStreamManager(cache, on_evento)  # on_resolucion_3bp=None (default)
+        mgr._despachar_resoluciones_3bp()
+
+        assert cache._resoluciones_3bp_pendientes == [(1, "AAPL", "5m", ResultadoBp34.STOP, -1.0, 0.5, -1.0, 5)]
+
+    asyncio.run(body())

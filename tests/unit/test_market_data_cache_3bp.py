@@ -8,7 +8,7 @@ import polars as pl
 from src.trading_scanner.engine.pattern_3bp import Estado3BP
 from src.trading_scanner.fetchers.calendar_client import CalendarWarning
 from src.trading_scanner.fetchers.market_data_cache import MarketDataCache, Vela
-from src.trading_scanner.models import ScanConfig, TickerBasico
+from src.trading_scanner.models import ResultadoBp34, ScanConfig, TickerBasico
 
 _EMPTY_DF = pl.DataFrame(schema={
     "timestamp": pl.Datetime("ms"),
@@ -152,11 +152,12 @@ def test_drenar_eventos_3bp_devuelve_y_vacia_la_cola():
     config = ScanConfig()
     cache = _seed_cache(config)
     evento = EventoPatron3BP(estado=Estado3BP.ENTRADA, timestamp=_BASE, tipo="3BP", entry=10.0, stop=9.0, tier="confirmado")
-    cache._eventos_3bp_pendientes = [("AAPL", "5m", evento)]
+    vela = Vela(_BASE, 10.0, 10.2, 9.8, 10.0, 1000.0)
+    cache._eventos_3bp_pendientes = [("AAPL", "5m", evento, vela)]
 
     drenados = cache.drenar_eventos_3bp()
 
-    assert drenados == [("AAPL", "5m", evento)]
+    assert drenados == [("AAPL", "5m", evento, vela)]
     assert cache.drenar_eventos_3bp() == []  # ya vacía
 
 
@@ -191,3 +192,72 @@ def test_procesar_3bp_encola_solo_en_entrada_no_en_otros_estados():
             assert len(pendientes) == 1 and pendientes[0][2] is evento_cann, estado
         else:
             assert pendientes == [], estado
+
+
+# ── Seguimiento de posiciones 3BP/4BP ya abiertas ─────────────────────────
+# Wireo (MarketDataCache._resolver_posiciones_abiertas/agregar_posicion_3bp_abierta/
+# drenar_resoluciones_3bp) — la lógica de resolución en sí (target/stop/cierre
+# forzado) ya está cubierta en test_pattern_3bp.py::SeguidorPosicion3BP. Acá
+# se usa un doble simple en vez de un SeguidorPosicion3BP real, para aislar
+# el wireo de esa lógica.
+
+
+class _SeguidorFalso:
+    def __init__(self, timeframe: str, resultado=None):
+        self.timeframe = timeframe
+        self._resultado = resultado
+        self.velas_vistas = []
+
+    def procesar_vela(self, vela):
+        self.velas_vistas.append(vela)
+        return self._resultado
+
+
+def test_agregar_posicion_3bp_abierta_engancha_al_ticker_existente():
+    cache = _seed_cache(ScanConfig())
+    seguidor = _SeguidorFalso("5m")
+
+    assert cache.agregar_posicion_3bp_abierta("AAPL", 123, seguidor) is True
+    assert cache.get("AAPL").posiciones_3bp_abiertas == [(123, seguidor)]
+
+
+def test_agregar_posicion_3bp_abierta_false_si_el_ticker_no_esta_en_el_cache():
+    cache = _seed_cache(ScanConfig())
+    assert cache.agregar_posicion_3bp_abierta("MSFT", 1, _SeguidorFalso("5m")) is False
+
+
+def test_resolver_posiciones_abiertas_ignora_timeframe_distinto():
+    cache = _seed_cache(ScanConfig())
+    seguidor_15m = _SeguidorFalso("15m")
+    cache.agregar_posicion_3bp_abierta("AAPL", 1, seguidor_15m)
+
+    cache._resolver_posiciones_abiertas(cache.get("AAPL"), "5m", _tick(30, 10.0, 10.2, 9.8, 10.0))
+
+    assert seguidor_15m.velas_vistas == []  # no se tocó — es de otro timeframe
+    assert cache.get("AAPL").posiciones_3bp_abiertas == [(1, seguidor_15m)]
+
+
+def test_resolver_posiciones_abiertas_deja_abierta_si_no_resuelve():
+    cache = _seed_cache(ScanConfig())
+    seguidor = _SeguidorFalso("5m", resultado=None)
+    cache.agregar_posicion_3bp_abierta("AAPL", 1, seguidor)
+
+    vela = _tick(30, 10.0, 10.2, 9.8, 10.0)
+    cache._resolver_posiciones_abiertas(cache.get("AAPL"), "5m", vela)
+
+    assert seguidor.velas_vistas == [vela]
+    assert cache.get("AAPL").posiciones_3bp_abiertas == [(1, seguidor)]
+    assert cache.drenar_resoluciones_3bp() == []
+
+
+def test_resolver_posiciones_abiertas_encola_resolucion_y_saca_de_la_lista():
+    resultado = (ResultadoBp34.TARGET, 2.0, 2.5, -0.3, 15)
+    cache = _seed_cache(ScanConfig())
+    seguidor = _SeguidorFalso("5m", resultado=resultado)
+    cache.agregar_posicion_3bp_abierta("AAPL", 42, seguidor)
+
+    cache._resolver_posiciones_abiertas(cache.get("AAPL"), "5m", _tick(30, 10.0, 10.2, 9.8, 10.0))
+
+    assert cache.get("AAPL").posiciones_3bp_abiertas == []  # ya se resolvió, sale de la lista
+    assert cache.drenar_resoluciones_3bp() == [(42, "AAPL", "5m", *resultado)]
+    assert cache.drenar_resoluciones_3bp() == []  # ya drenada

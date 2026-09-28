@@ -28,6 +28,7 @@ from typing import Awaitable, Callable, Optional
 from ..config import settings
 from ..engine.pattern_3bp import EventoPatron3BP
 from ..logging_setup import console
+from ..models import ResultadoBp34
 from .market_data_cache import MarketDataCache, Vela
 from .mock_schwab import _seed
 from .schwab_client import get_client
@@ -37,7 +38,8 @@ BACKOFF_MAX_S = 60.0
 BACKOFF_JITTER = 0.2
 
 OnEventoSignificativo = Callable[[str], Awaitable[None]]
-OnEvento3BP = Callable[[str, str, EventoPatron3BP], Awaitable[None]]
+OnEvento3BP = Callable[[str, str, EventoPatron3BP, Vela], Awaitable[None]]
+OnResolucion3BP = Callable[[int, str, str, ResultadoBp34, float, float, float, int], Awaitable[None]]
 
 
 class BaseStreamManager(ABC):
@@ -48,10 +50,12 @@ class BaseStreamManager(ABC):
         cache: MarketDataCache,
         on_evento: OnEventoSignificativo,
         on_evento_3bp: Optional[OnEvento3BP] = None,
+        on_resolucion_3bp: Optional[OnResolucion3BP] = None,
     ):
         self._cache = cache
         self._on_evento = on_evento
         self._on_evento_3bp = on_evento_3bp
+        self._on_resolucion_3bp = on_resolucion_3bp
         self._conectado = False
         self._ultimo_tick_en: Optional[datetime] = None
         self._intentos_reconexion = 0
@@ -91,8 +95,16 @@ class BaseStreamManager(ABC):
         persistencia en vivo, ej. en tests)."""
         if self._on_evento_3bp is None:
             return
-        for ticker, timeframe, evento in self._cache.drenar_eventos_3bp():
-            asyncio.create_task(self._on_evento_3bp(ticker, timeframe, evento))
+        for ticker, timeframe, evento, vela in self._cache.drenar_eventos_3bp():
+            asyncio.create_task(self._on_evento_3bp(ticker, timeframe, evento, vela))
+
+    def _despachar_resoluciones_3bp(self) -> None:
+        """Mismo patrón que _despachar_eventos_3bp, para las resoluciones
+        (target/stop/cierre forzado) de posiciones 3BP/4BP ya abiertas."""
+        if self._on_resolucion_3bp is None:
+            return
+        for datos in self._cache.drenar_resoluciones_3bp():
+            asyncio.create_task(self._on_resolucion_3bp(*datos))
 
 
 class StreamManager(BaseStreamManager):
@@ -105,8 +117,9 @@ class StreamManager(BaseStreamManager):
         cache: MarketDataCache,
         on_evento: OnEventoSignificativo,
         on_evento_3bp: Optional[OnEvento3BP] = None,
+        on_resolucion_3bp: Optional[OnResolucion3BP] = None,
     ):
-        super().__init__(cache, on_evento, on_evento_3bp)
+        super().__init__(cache, on_evento, on_evento_3bp, on_resolucion_3bp)
         self._stream_client = None
         self._task: Optional[asyncio.Task] = None
         self._stop_solicitado = False
@@ -168,6 +181,7 @@ class StreamManager(BaseStreamManager):
             evento = self._cache.actualizar_vela_1m(ticker, vela)
             self._despachar_si_evento(ticker, evento)
             self._despachar_eventos_3bp()
+            self._despachar_resoluciones_3bp()
 
     async def start(self, tickers: list[str]) -> None:
         self._stop_solicitado = False
@@ -245,8 +259,9 @@ class MockStreamManager(BaseStreamManager):
         intervalo_tick_s: float = 1.0,
         intervalo_vela_s: float = 5.0,
         on_evento_3bp: Optional[OnEvento3BP] = None,
+        on_resolucion_3bp: Optional[OnResolucion3BP] = None,
     ):
-        super().__init__(cache, on_evento, on_evento_3bp)
+        super().__init__(cache, on_evento, on_evento_3bp, on_resolucion_3bp)
         self._intervalo_tick_s = intervalo_tick_s
         self._intervalo_vela_s = intervalo_vela_s
         self._tasks: dict[str, asyncio.Task] = {}
@@ -312,6 +327,7 @@ class MockStreamManager(BaseStreamManager):
                     evento_vela = self._cache.actualizar_vela_1m(ticker, vela_1m_acumulada)
                     self._despachar_si_evento(ticker, evento_vela)
                     self._despachar_eventos_3bp()
+                    self._despachar_resoluciones_3bp()
                     vela_1m_acumulada = None
         except asyncio.CancelledError:
             return
@@ -327,7 +343,8 @@ def crear_stream_manager(
     cache: MarketDataCache,
     on_evento: OnEventoSignificativo,
     on_evento_3bp: Optional[OnEvento3BP] = None,
+    on_resolucion_3bp: Optional[OnResolucion3BP] = None,
 ) -> BaseStreamManager:
     if settings.mock_schwab:
-        return MockStreamManager(cache, on_evento, on_evento_3bp=on_evento_3bp)
-    return StreamManager(cache, on_evento, on_evento_3bp)
+        return MockStreamManager(cache, on_evento, on_evento_3bp=on_evento_3bp, on_resolucion_3bp=on_resolucion_3bp)
+    return StreamManager(cache, on_evento, on_evento_3bp, on_resolucion_3bp)

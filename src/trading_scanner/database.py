@@ -441,6 +441,27 @@ class TursoClient:
         params.append(limit)
         return await self._execute(sql, params)
 
+    async def get_bp34_eventos_abiertos(self, ticker: str) -> list[dict]:
+        """Entradas LIVE de ese ticker que siguen en resultado=ABIERTO — usado
+        al reconectar el stream (main.py) para reconciliar posiciones que
+        quedaron sin resolver por un reinicio del servidor a mitad de sesión."""
+        sql = "SELECT * FROM bp34_eventos WHERE ticker = ? AND fuente = 'LIVE' AND resultado = 'ABIERTO'"
+        return await self._execute(sql, [ticker.upper()])
+
+    async def update_bp34_evento_resultado(
+        self, evento_id: int, resultado: str, resultado_r: float,
+        mfe_r: float, mae_r: float, tiempo_en_trade_minutos: int,
+    ) -> None:
+        """Actualiza una fila ya insertada (resultado=ABIERTO al crearla) con
+        el resultado real una vez que se resuelve — en vivo (SeguidorPosicion3BP
+        vía main.py) o al reconciliar tras un reinicio del servidor."""
+        sql = """
+        UPDATE bp34_eventos
+        SET resultado = ?, resultado_r = ?, mfe_r = ?, mae_r = ?, tiempo_en_trade_minutos = ?
+        WHERE id = ?
+        """
+        await self._execute(sql, [resultado, resultado_r, mfe_r, mae_r, tiempo_en_trade_minutos, evento_id])
+
     async def insert_bp34_backtest_run(self, backtest: dict) -> int:
         """Inserta un resultado de backtest del módulo 3BP/4BP. Retorna el ID."""
         sql = """

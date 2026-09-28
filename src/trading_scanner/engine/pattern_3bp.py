@@ -13,9 +13,12 @@ alcance" en la spec.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import date, datetime, timezone
 from enum import Enum
 from typing import Optional
+from zoneinfo import ZoneInfo
+
+from ..models import ResultadoBp34
 
 
 # "3 y 4 Bar Play" es una definición cerrada, no "N Bar Play" — el grupo
@@ -223,3 +226,132 @@ class Detector3BP:
 
         self._registrar_rango_previo(vela)
         return evento
+
+
+# ── Horario NY — compartido por el filtro de sesión (backtest/walker_3bp.py)
+# y por el seguimiento en vivo de acá abajo, para que ambos usen exactamente
+# la misma conversión (mismo criterio "naive pero UTC" de todo el sistema).
+
+_NY_TZ = ZoneInfo("America/New_York")
+_APERTURA_NY_MIN = 9 * 60 + 30   # 9:30
+_CIERRE_NY_MIN = 16 * 60         # 16:00 (exclusivo)
+# 15:55 NY en minutos desde la apertura — mismo cierre forzado que
+# backtest/simulator.py::_CIERRE_FORZADO_HORA_NY, expresado en esta unidad.
+_MINUTOS_CIERRE_FORZADO = 15 * 60 + 55 - _APERTURA_NY_MIN
+_MINUTOS_POR_TIMEFRAME = {"5m": 5, "15m": 15}
+
+
+def minutos_desde_apertura_ny(ts: datetime) -> int:
+    """Minutos desde las 9:30 NY del timestamp dado (naive pero UTC, mismo
+    contrato que el resto del sistema) — negativo si es antes de la
+    apertura. Usado por el filtro de sesión del walker de backtest y por
+    `SeguidorPosicion3BP` de acá abajo."""
+    ts_ny = ts.replace(tzinfo=timezone.utc).astimezone(_NY_TZ)
+    return ts_ny.hour * 60 + ts_ny.minute - _APERTURA_NY_MIN
+
+
+def fecha_ny(ts: datetime) -> date:
+    """Fecha de trading NY del timestamp dado (naive pero UTC). Usada por
+    `SeguidorPosicion3BP` acá abajo y por `main.py::_on_evento_3bp` para
+    fechar el evento por la sesión NY real, no por la fecha local del
+    servidor (que puede diferir cerca de la medianoche, aunque en la
+    práctica el filtro de sesión regular ya acota las entradas a un rango
+    horario bien dentro del mismo día calendario en cualquier huso horario
+    razonable)."""
+    return ts.replace(tzinfo=timezone.utc).astimezone(_NY_TZ).date()
+
+
+class SeguidorPosicion3BP:
+    """Sigue en vivo una entrada 3BP/4BP ya aceptada, vela a vela, hasta que
+    toca target, toca stop, o llega el cierre forzado (15:55 NY) — la
+    versión "streaming" de `backtest/walker_3bp.py::_resolver_entrada`, que
+    recibe de una sola vez todas las velas futuras del día porque en
+    backtest ya están todas disponibles de antemano. Acá se alimenta una
+    vela genuina por vez a medida que cierra (`procesar_vela()`), tanto
+    para el seguimiento realmente en vivo (una vela nueva del stream) como
+    para "ponerse al día" tras un reinicio del servidor, alimentando de una
+    sola vez el historial real ya transcurrido (ver `main.py`, reconciliación
+    al reconectar el stream) — mismo objeto, mismo método, ambos casos.
+
+    Misma semántica exacta que `_resolver_entrada`: prioridad al stop si una
+    vela toca ambos niveles, mismo costo de `slippage_bps` en la salida (la
+    entrada ya se asume pagada). 3BP nunca sostiene una posición de un día
+    para el otro (a diferencia del SWING del clasificador de 6 criterios):
+    cualquier vela de un día distinto al de la entrada, o posterior al
+    cierre forzado, dispara la resolución usando el cierre de la última
+    vela válida vista — nunca deja una posición "colgada" indefinidamente."""
+
+    def __init__(
+        self, ticker: str, timeframe: str, fecha: date, entry: float, stop: float,
+        target: float, slippage_bps: float = 0.0,
+    ):
+        self.ticker = ticker
+        self.timeframe = timeframe
+        self.fecha = fecha
+        self.entry = entry
+        self.stop = stop
+        self.target = target
+        self.slippage_bps = slippage_bps
+        self.resuelto = False
+        self._mfe_r = 0.0
+        self._mae_r = 0.0
+        self._velas_vistas = 0
+        self._ultima_vela = None
+
+    def procesar_vela(self, vela) -> Optional[tuple[ResultadoBp34, float, float, float, int]]:
+        """`vela`: cualquier objeto con `.timestamp`/`.high`/`.low`/`.close`
+        (duck-typing — sirve tanto `Vela` como `VelaPattern`). Devuelve
+        `(resultado, resultado_r, mfe_r, mae_r, tiempo_en_trade_minutos)` si
+        esta vela resolvió la posición — `None` si sigue abierta. No hace
+        nada si ya estaba resuelta (llamar de más es inofensivo)."""
+        if self.resuelto:
+            return None
+        stop_dist = self.entry - self.stop
+        if stop_dist <= 0:
+            self.resuelto = True
+            return ResultadoBp34.SIN_DEFINIR, 0.0, 0.0, 0.0, 0
+
+        minutos_vela = _MINUTOS_POR_TIMEFRAME[self.timeframe]
+        slip = self.slippage_bps / 10_000
+
+        def _costo_r(salida: float) -> float:
+            return slip * (salida + self.entry) / stop_dist
+
+        # vela de otro día, o posterior al cierre forzado del día de la
+        # entrada — no se procesa (el backtest tampoco la incluiría),
+        # se cierra con el cierre de la última vela válida ya vista.
+        if fecha_ny(vela.timestamp) != self.fecha or minutos_desde_apertura_ny(vela.timestamp) > _MINUTOS_CIERRE_FORZADO:
+            return self._cerrar_forzado(stop_dist, minutos_vela, _costo_r)
+
+        self._velas_vistas += 1
+        self._ultima_vela = vela
+        self._mfe_r = max(self._mfe_r, (vela.high - self.entry) / stop_dist)
+        self._mae_r = min(self._mae_r, (vela.low - self.entry) / stop_dist)
+
+        if vela.low <= self.stop:
+            self.resuelto = True
+            tiempo = (self._velas_vistas - 1) * minutos_vela
+            return ResultadoBp34.STOP, -1.0 - _costo_r(self.stop), self._mfe_r, self._mae_r, tiempo
+        if vela.high >= self.target:
+            self.resuelto = True
+            target_r = (self.target - self.entry) / stop_dist
+            tiempo = (self._velas_vistas - 1) * minutos_vela
+            return ResultadoBp34.TARGET, target_r - _costo_r(self.target), self._mfe_r, self._mae_r, tiempo
+
+        if minutos_desde_apertura_ny(vela.timestamp) + minutos_vela > _MINUTOS_CIERRE_FORZADO:
+            # esta vela es la última del día permitida (la siguiente ya
+            # caería después de las 15:55) — mismo criterio que el último
+            # elemento de `velas_desde_gatillo` en _resolver_entrada.
+            return self._cerrar_forzado(stop_dist, minutos_vela, _costo_r)
+        return None
+
+    def _cerrar_forzado(self, stop_dist: float, minutos_vela: int, _costo_r) -> tuple[ResultadoBp34, float, float, float, int]:
+        self.resuelto = True
+        if self._ultima_vela is None:
+            # nunca llegó a ver ninguna vela válida (ej. reconciliación sin
+            # historial disponible ese día) — sin dato real para resolver.
+            return ResultadoBp34.SIN_DEFINIR, 0.0, self._mfe_r, self._mae_r, 0
+        cierre = self._ultima_vela.close
+        resultado_r = (cierre - self.entry) / stop_dist - _costo_r(cierre)
+        tiempo = (self._velas_vistas - 1) * minutos_vela
+        return ResultadoBp34.SIN_DEFINIR, resultado_r, self._mfe_r, self._mae_r, tiempo
