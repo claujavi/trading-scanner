@@ -209,6 +209,46 @@ def test_caminar_dia_conserva_entradas_con_stop_igual_o_mayor_al_minimo(monkeypa
     assert len(eventos) == 1
 
 
+def _velas_escenario_3bp_sin_confirmar() -> list[Vela]:
+    """Mismo escenario que _velas_escenario_3bp() pero con la barra gatillo
+    con volumen bajo (1000, igual al del resto) — tier="sin_confirmar" con
+    el bp34_volumen_confirmado_mult=2.0 de _config_3bp()."""
+    base = datetime(2026, 1, 2, 9, 30)
+    return [
+        _v(base, high=1.0, low=0.5, close=0.8),
+        _v(base + timedelta(minutes=5), high=10.0, low=2.0, close=9.0),
+        _v(base + timedelta(minutes=10), high=9.0, low=6.0, close=8.0),
+        _v(base + timedelta(minutes=15), high=11.0, low=9.5, close=10.8),  # sin volumen alto
+        _v(base + timedelta(minutes=20), high=14.5, low=13.9, close=14.2),
+    ]
+
+
+def test_caminar_dia_descarta_sin_confirmar_si_se_pide_solo_confirmado(monkeypatch):
+    eventos = walker_3bp._caminar_dia(
+        _velas_escenario_3bp_sin_confirmar(), "AAPL", "5m", date(2026, 1, 2),
+        _config_3bp(bp34_solo_tier_confirmado=True), FuenteDatos.HISTORICO,
+    )
+    assert eventos == []
+
+
+def test_caminar_dia_conserva_sin_confirmar_por_default():
+    eventos = walker_3bp._caminar_dia(
+        _velas_escenario_3bp_sin_confirmar(), "AAPL", "5m", date(2026, 1, 2),
+        _config_3bp(), FuenteDatos.HISTORICO,  # bp34_solo_tier_confirmado=False (default)
+    )
+    assert len(eventos) == 1
+    assert eventos[0].tier == "sin_confirmar"
+
+
+def test_caminar_dia_conserva_confirmado_aunque_se_pida_solo_confirmado():
+    eventos = walker_3bp._caminar_dia(
+        _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),  # barra gatillo con volumen alto -> confirmado
+        _config_3bp(bp34_solo_tier_confirmado=True), FuenteDatos.HISTORICO,
+    )
+    assert len(eventos) == 1
+    assert eventos[0].tier == "confirmado"
+
+
 def test_caminar_dia_aplica_el_slippage_de_la_config(monkeypatch):
     # target = 14, entry = 10, stop_dist = 8: costo = 0.001 * (14 + 10) / 8 = 0.003R
     eventos = walker_3bp._caminar_dia(

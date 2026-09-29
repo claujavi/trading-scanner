@@ -274,10 +274,12 @@ por calidad):
 | Bootstrap DD mediana / p95 | 12.8% / 21.8% | 10.5% / 17.6% |
 | P(terminar por debajo de $300) | 1% | 0% |
 
-**Status: identificado, no implementado como filtro real** (`volumen_confirmado_mult` sigue siendo
-puramente informativo en el detector, no descarta nada) — candidato fuerte para una próxima
-recalibración que incluya la opción de filtrar por tier, o simplemente aplicarlo como post-filtro
-manual sobre las señales que ya salen del sistema.
+**Status: implementado (2026-09-29).** `ScanConfig.bp34_solo_tier_confirmado` (default `False`)
+descarta entradas `sin_confirmar` en backtest (`walker_3bp._caminar_dia`) y en vivo (`main.py::
+_on_evento_3bp`), mismo patrón que `bp34_stop_min_pct`. `trading-scanner-optimize-3bp` gana
+`--solo-confirmado/--sin-filtrar-tier`. Config activa actualizada (`scan_configs` id=11,
+`bp34_costos_rth_tier_confirmado_2026-09-29`) con el filtro encendido, sobre la config de la Ronda
+2/3 (costos + sesión regular). 4 tests nuevos.
 
 ---
 
@@ -305,8 +307,11 @@ manual sobre las señales que ya salen del sistema.
 7. **El edge no se sostiene fuera de acciones baratas (<$20)** — ver Ronda 4. Antes de operar con
    una cuenta más grande hace falta precargar un universo de nombres líquidos/caros de verdad y
    recalibrar `bp34_*` para ese régimen — no asumir que los parámetros de microcaps transfieren.
-8. **Filtro por `tier="confirmado"` cuantificado pero no implementado** (Ronda 5) — mejora retorno
-   y drawdown a la vez en la cuenta de $300 (15m). Candidato fuerte para la próxima iteración.
+8. ~~Filtro por `tier="confirmado"` cuantificado pero no implementado~~ — **implementado 2026-09-29**
+   (`bp34_solo_tier_confirmado`, ver Ronda 5). La calibración de `bp34_*` en sí **no se re-corrió**
+   con el filtro activo — los parámetros ganadores siguen siendo los de la Ronda 2/3, calibrados
+   sin este filtro. Una recalibración completa que optimice `bp34_*` ya con el filtro puesto podría
+   encontrar un óptimo distinto (quedaría para una próxima iteración si se busca exprimir más).
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 

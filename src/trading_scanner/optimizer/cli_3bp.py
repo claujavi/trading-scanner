@@ -156,6 +156,15 @@ def run(
             "(bp34_stop_min_pct). Sin esto usa el de la config activa (0 = sin mínimo)."
         ),
     ),
+    solo_confirmado: bool = typer.Option(
+        False,
+        "--solo-confirmado/--sin-filtrar-tier",
+        help=(
+            "Descarta entradas con tier='sin_confirmar' (bp34_solo_tier_confirmado). Ver "
+            "docs/resumen_calibracion_3bp_2026-09.md Ronda 5: mejora retorno y drawdown a la vez "
+            "en 15m, evidencia mixta en 5m."
+        ),
+    ),
     sesion_regular: bool = typer.Option(
         True,
         "--sesion-regular/--todas-las-horas",
@@ -233,6 +242,7 @@ def run(
         raise typer.Exit(code=1)
     overrides_config["bp34_entradas_solo_sesion_regular"] = sesion_regular
     overrides_config["bp34_ventana_entrada_minutos"] = ventana_entrada_min
+    overrides_config["bp34_solo_tier_confirmado"] = solo_confirmado
     if overrides_config:
         console.log(f"[cyan]Overrides sobre la config activa: {overrides_config}[/cyan]")
 

@@ -250,6 +250,8 @@ def _caminar_dia(
         # se descarta la entrada, no se cuenta como pérdida ni ganancia.
         if (evento.entry - evento.stop) / evento.entry * 100 < config.bp34_stop_min_pct:
             continue
+        if config.bp34_solo_tier_confirmado and evento.tier != "confirmado":
+            continue  # ver ScanConfig.bp34_solo_tier_confirmado
 
         resultado, resultado_r, mfe_r, mae_r, tiempo = _resolver_entrada(
             velas_dia[i:], evento.entry, evento.stop, target_r, timeframe, config.slippage_bps

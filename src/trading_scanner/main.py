@@ -143,6 +143,8 @@ async def lifespan(app: FastAPI):
                 return  # mismo criterio de tradabilidad que el walker de backtest
             if not evento_en_ventana_permitida(evento.timestamp, config):
                 return  # fuera de la ventana de sesión calibrada (bp34_entradas_solo_sesion_regular)
+            if config.bp34_solo_tier_confirmado and evento.tier != "confirmado":
+                return  # ver ScanConfig.bp34_solo_tier_confirmado
             target_r = getattr(config, f"bp34_target_r_{timeframe}")
             target = evento.entry + (evento.entry - evento.stop) * target_r
             evento_bp34 = Bp34Evento(

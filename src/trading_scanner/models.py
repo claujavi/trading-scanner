@@ -235,6 +235,20 @@ class ScanConfig(BaseModel):
     # bp34_entradas_solo_sesion_regular. En sesión regular el 85% de las
     # entradas cae entre 9:30 y 11:00.
     bp34_ventana_entrada_minutos: int = Field(0, ge=0)
+    # True = descarta entradas con tier="sin_confirmar" (ruptura sin volumen
+    # >= bp34_volumen_confirmado_mult x promedio), tanto en backtest como en
+    # vivo. Analizado en docs/resumen_calibracion_3bp_2026-09.md (Ronda 5,
+    # 2026-09-28): con la calibración recomendada (costos + sesión regular),
+    # "confirmado" rinde mejor que "sin_confirmar" en 15m (expectancy 0.151R
+    # vs 0.022R, sostenido en ambas mitades del período) — al contrario de un
+    # hallazgo anterior (Ronda 1.5) que resultó ser un artefacto de datos sin
+    # costos ni filtro de horario. En la cuenta de $300 simulada, este filtro
+    # mejora retorno Y drawdown a la vez, sin el trade-off cantidad/calidad
+    # de otros filtros probados (ATR%, barra1_wrb_ratio). Evidencia mixta en
+    # 5m (se invierte entre mitades) — no recomendado operar 5m de todos
+    # modos, ver el resumen. Default False = comportamiento anterior (tier
+    # puramente informativo, no descarta nada).
+    bp34_solo_tier_confirmado: bool = False
 
     # ── Validaciones cruzadas entre campos relacionados ──────────────────────
     @model_validator(mode="after")
