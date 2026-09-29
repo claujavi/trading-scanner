@@ -238,6 +238,49 @@ revalidación contra `universo_real`.
 
 ---
 
+## Ronda 5 (2026-09-28) — corrección del hallazgo de `tier`, y un filtro que sí funciona
+
+La Ronda 1.5 había encontrado que `sin_confirmar` rendía *mejor* que `confirmado` (exp 0.269R vs
+0.205R) — contraintuitivo, quedó sin investigar. Repetido sobre los eventos de la calibración
+recomendada (costos reales + RTH, study `3bp_15m_costos_rth`), **el resultado se invierte por
+completo**:
+
+| | 15m confirmado | 15m sin_confirmar |
+|---|---|---|
+| n | 1185 | 710 |
+| Win rate | 47.7% | 45.4% |
+| Profit factor | 1.39 | 1.06 |
+| Expectancy | **+0.151R** | +0.022R |
+
+Se sostiene en las dos mitades del período (split en 2026-04-14). No es un efecto de pocos
+tickers dominando la muestra (391 tickers distintos en `confirmado`, top 5 concentra solo 3%). En
+5m es menos consistente (se invierte entre mitades) — no se usa como base para decidir nada ahí,
+dado que 5m ya no se recomienda operar.
+
+**Por qué se invirtió:** el hallazgo original de la Ronda 1.5 corría sobre datos sin costos, sin
+filtro de horario y con la calibración vieja — mezclaba entradas de pre-market/madrugada que
+después se identificaron como no operables (Ronda 2). Con eso limpio, el resultado pasa a ser el
+intuitivo: la ruptura con volumen fuerte confirma mejor que una floja.
+
+**Cuantificado en la cuenta de $300 (15m, 1% capitalizando):** filtrar a solo `tier="confirmado"`
+mejora las dos dimensiones a la vez, sin trade-off (a diferencia de ATR%/WRB, que cambian cantidad
+por calidad):
+
+| | Todos | Solo `confirmado` |
+|---|---|---|
+| Señales | 1895 | 1185 (63%) |
+| Equity final | $567 (x1.89) | **$669 (x2.23)** |
+| Drawdown máx. real | 13.6% | **10.1%** |
+| Bootstrap DD mediana / p95 | 12.8% / 21.8% | 10.5% / 17.6% |
+| P(terminar por debajo de $300) | 1% | 0% |
+
+**Status: identificado, no implementado como filtro real** (`volumen_confirmado_mult` sigue siendo
+puramente informativo en el detector, no descarta nada) — candidato fuerte para una próxima
+recalibración que incluya la opción de filtrar por tier, o simplemente aplicarlo como post-filtro
+manual sobre las señales que ya salen del sistema.
+
+---
+
 ## Qué falta antes de operar esto en serio
 
 1. **El vivo no filtra por horario todavía.** `bp34_entradas_solo_sesion_regular` solo se aplicó al
@@ -262,6 +305,8 @@ revalidación contra `universo_real`.
 7. **El edge no se sostiene fuera de acciones baratas (<$20)** — ver Ronda 4. Antes de operar con
    una cuenta más grande hace falta precargar un universo de nombres líquidos/caros de verdad y
    recalibrar `bp34_*` para ese régimen — no asumir que los parámetros de microcaps transfieren.
+8. **Filtro por `tier="confirmado"` cuantificado pero no implementado** (Ronda 5) — mejora retorno
+   y drawdown a la vez en la cuenta de $300 (15m). Candidato fuerte para la próxima iteración.
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 
