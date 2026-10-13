@@ -374,15 +374,44 @@ búsqueda 1.0-4.0 otra vez — sigue sin investigarse por qué, ver pendientes):
 | ventana_inicio_barras | 7 | 8 |
 | volumen_confirmado_mult | 3.550 | 3.094 |
 
-### ⚠️ Pregunta abierta: ¿sigue siendo 15m el recomendado?
+### ¿15m, 5m, o los dos al mismo tiempo? — RESUELTO (2026-10-13)
 
-Hasta la Ronda 5, 15m era claramente la opción recomendada (mejor PF/drawdown, 5m con evidencia
-mixta). Con el fix del stop, **5m da mejores números que 15m en expectancy, PF y drawdown** — pero
-con una muestra bastante más chica (676 trades contra 1301) y filtrando mucho más agresivamente
-(de 3173 a 676, un 79% de las señales originales descartadas por el piso de ATR, contra un 26% en
-15m). No se decidió todavía cuál priorizar — queda pendiente para cuando el trader lo revise. La
-config activa (`scan_configs` id=12, `bp34_stop_fix_v2_2026-10-13`) por ahora dejó el campo
-compartido `volumen_confirmado_mult` en el valor de 15m, sin tomar partido todavía.
+Por trade (expectancy/PF), 5m seguía ganando a 15m incluso en una regeneración posterior con
+eventos frescos (universo cacheado creció de ~495 a ~513 tickers entre el 02/10 y el 13/10, así
+que los números cambian levemente respecto a la tabla de arriba — ruido de cache, no del fix):
+
+| | 15m (n=1265) | 5m (n=630) |
+|---|---|---|
+| Win rate | 36.5% | 27.5% |
+| Profit factor | 1.11 | 1.18 |
+| Expectancy | +0.071R | **+0.138R** |
+
+Pero lo que importa es el resultado de la CUENTA, no la expectancy por trade sola — se repitió la
+misma simulación de cuenta compartida de la Ronda 3/4 ($300, riesgo≤1% sin apalancamiento, 3
+posiciones, corte diario -3%, 231 días hábiles) con los eventos regenerados (cada timeframe con su
+propio `volumen_confirmado_mult` óptimo, no el compartido de la config activa):
+
+| Variante | Retorno | DD máx. real | Bootstrap DD p95 | P(perder) |
+|---|---|---|---|---|
+| 15m sola | **+70.8%** | 17.9% | 24.3% | 2% |
+| 5m sola | +51.2% | 17.4% | 24.0% | 4% |
+| 15m + 5m combinadas (3 slots compartidos) | +47.9% | 15.7% | **33.7%** | **9%** |
+| 15m sola, riesgo ≤2%/trade | **+80.6%** | 20.8% | 28.1% | 2% |
+| 5m sola, riesgo ≤2%/trade | +65.8% | 18.3% | 25.1% | 4% |
+
+**Conclusión: 15m sigue siendo la mejor opción individual, y combinar ambos timeframes en la misma
+cuenta sigue siendo la PEOR opción** — mismo resultado cualitativo que la Ronda 3/4, ahora
+confirmado con datos post-fix. Al competir por los mismos 3 cupos solo entra el 46% de las señales
+de 15m y el 72% de las de 5m (diluye calidad en vez de sumar); el drawdown máximo puntual de la
+combinación (15.7%) parece el más bajo de la tabla, pero la cola de riesgo real (bootstrap p95
+33.7%, P(perder)=9%) es la peor de todas. **Por qué 15m le gana a 5m en la cuenta pese a tener
+menor expectancy por trade:** dispara el doble de señales (1265 vs 630) — compone más seguido, y
+eso pesa más que la expectancy individual para el crecimiento de la cuenta. La mejor variante de
+toda la tabla sigue siendo 15m sola con el doble de riesgo por trade.
+
+**No operar 5m, no correr los dos timeframes a la vez.** La config activa (`scan_configs` id=12)
+queda con el campo compartido `volumen_confirmado_mult` en el valor de 15m — correcto, ya no es una
+decisión pendiente.
 
 ### Cierre (2026-10-13)
 
@@ -420,17 +449,13 @@ compartido `volumen_confirmado_mult` en el valor de 15m, sin tomar partido todav
    recalibrar `bp34_*` para ese régimen — no asumir que los parámetros de microcaps transfieren.
 8. ~~Filtro por `tier="confirmado"` cuantificado pero no implementado~~ — **implementado 2026-09-29**
    (`bp34_solo_tier_confirmado`). Ya incluido en todas las recalibraciones de la Ronda 6.
-9. **[Ronda 6] ¿15m o 5m?** — la pregunta abierta de la Ronda 6: 5m ahora rinde mejor en expectancy/
-   PF/drawdown que 15m, pero con menos señales (676 vs 1301) y filtrando mucho más agresivo (79% de
-   las señales originales descartadas por el piso de ATR, contra 26% en 15m). No decidido todavía.
-10. **[Ronda 6] No se corrió la simulación de cuenta de $300 ni la validación split-half con los
-    números nuevos (post-fix de stop).** Las de la Ronda 3/4 quedaron con el stop viejo — antes de
-    confiar en estos números para operar, conviene repetir esos dos chequeos con los eventos
-    corregidos (eventos ya generados por las corridas de la Ronda 6, reusables sin volver a correr
-    el walker).
-11. **[Ronda 6] `bp34_volumen_confirmado_mult` compartido entre timeframes, sin resolver del todo**
-    — la config activa quedó con el valor de 15m (3.55); 5m pedía 3.09. Mismo problema de siempre
-    con este campo compartido, ahora más relevante dado que la pregunta 15m-vs-5m sigue abierta.
+9. ~~¿15m o 5m?~~ — **resuelto (2026-10-13)**: 15m, y no combinar — ver "¿15m, 5m, o los dos al
+   mismo tiempo?" arriba. Combinar en la misma cuenta es la peor opción de todas las probadas.
+10. **[Ronda 6] No se repitió la validación split-half (dos mitades del período) con los eventos
+    post-fix** — sí se repitió la simulación de cuenta de $300 (ver arriba), pero no el chequeo de
+    que el edge se sostiene en ambas mitades del rango temporal. Pendiente.
+11. ~~`bp34_volumen_confirmado_mult` compartido entre timeframes, sin resolver del todo~~ —
+    **resuelto**: queda en el valor de 15m, ya no es una decisión pendiente (ver punto 9).
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 
