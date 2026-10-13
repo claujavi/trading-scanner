@@ -19,6 +19,14 @@ def _detector(**overrides) -> Detector3BP:
         n_invalidacion=10,
         ventana_inicio_barras=3,
         volumen_confirmado_mult=2.0,
+        # Piso de ATR (regla R2) deliberadamente chico acá: la mayoría de los
+        # tests de este archivo prueban la estructura del patrón (grupo,
+        # invalidación, etc.), no el piso en sí — con esto nunca se activa
+        # (distancia_tecnica siempre gana el max()), así no hace falta
+        # recalcular el stop esperado en cada test existente. El piso tiene
+        # sus propios tests dedicados más abajo, con un valor explícito que sí
+        # lo activa.
+        stop_atr_multiplicador=0.1,
     )
     base.update(overrides)
     return Detector3BP(**base)
@@ -111,9 +119,65 @@ def test_dispara_3bp_con_una_sola_barra_de_grupo():
     assert evento.estado == Estado3BP.ENTRADA
     assert evento.tipo == "3BP"
     assert evento.entry == 10.0  # max(barra1.high=10, grupo highs=[9])
-    assert evento.stop == 2.0    # min(barra1.low=2, grupo lows=[6])
+    assert evento.stop == 6.0    # min(grupo lows=[6]) — NO barra1.low (2.0), ver fix 2026-10-01
     assert evento.barra1_wrb_ratio == 2.0  # rango barra1 (8) / atr14 (4) al detectarla
     assert det.estado == Estado3BP.SIN_PATRON  # se resetea después de disparar
+
+
+def test_stop_es_el_low_del_grupo_nunca_el_de_barra1():
+    """Bug real encontrado 2026-10-01: el stop quedaba siempre en barra1.low
+    (más ancho de lo que pide la spec/el curso) porque _bar_confirma_grupo
+    garantiza que el low de cualquier barra del grupo sea mayor al de
+    barra1 — el término barra1.low nunca podía perder un min() contra eso.
+    Mismo escenario que el test de arriba, afirmado explícitamente."""
+    det = _detector()
+    det.procesar_barra(_v(0, high=10.0, low=2.0, close=9.0), atr14=4.0)   # barra1, low=2.0
+    det.procesar_barra(_v(1, high=9.0, low=6.0, close=8.0), atr14=4.0)    # barra2 (grupo), low=6.0
+
+    evento = det.procesar_barra(_v(2, high=10.5, low=9.0, close=10.3), atr14=4.0)
+
+    assert evento.stop == 6.0
+    assert evento.stop != 2.0  # ese era el valor con el bug (barra1.low)
+
+
+def test_stop_4bp_usa_el_minimo_de_las_dos_barras_del_grupo():
+    det = _detector()
+    det.procesar_barra(_v(0, high=10.0, low=2.0, close=9.0), atr14=4.0)   # barra1, low=2.0
+    det.procesar_barra(_v(1, high=9.0, low=7.0, close=8.0), atr14=4.0)    # barra2 (grupo), low=7.0
+    det.procesar_barra(_v(2, high=9.5, low=6.5, close=8.5), atr14=4.0)    # barra3 (grupo), low=6.5 (menor)
+
+    evento = det.procesar_barra(_v(3, high=10.5, low=9.0, close=10.3), atr14=4.0)
+
+    assert evento.estado == Estado3BP.ENTRADA
+    assert evento.tipo == "4BP"
+    assert evento.stop == 6.5  # min(7.0, 6.5) — nunca barra1.low (2.0)
+
+
+# ── Piso de ATR14×stop_atr_multiplicador (regla R2) ───────────────────────
+
+
+def test_piso_de_atr_ensancha_el_stop_si_el_tecnico_es_mas_ajustado():
+    # entry=10, stop técnico=6 (grupo) -> distancia técnica=4.
+    # piso = 1.5 * atr14(4.0) = 6 > 4 -> gana el piso: stop = 10 - 6 = 4.
+    det = _detector(stop_atr_multiplicador=1.5)
+    det.procesar_barra(_v(0, high=10.0, low=2.0, close=9.0), atr14=4.0)  # barra1
+    det.procesar_barra(_v(1, high=9.0, low=6.0, close=8.0), atr14=4.0)   # barra2 (grupo), low=6.0
+
+    evento = det.procesar_barra(_v(2, high=10.5, low=9.0, close=10.3), atr14=4.0)
+
+    assert evento.stop == 4.0  # 10 - max(4, 6) = 4 — más ancho que el técnico (6.0)
+
+
+def test_piso_de_atr_no_cambia_el_stop_si_el_tecnico_ya_es_mas_ancho():
+    # entry=10, stop técnico=6 -> distancia técnica=4.
+    # piso = 0.5 * atr14(4.0) = 2 < 4 -> gana el técnico: stop = 6 (sin cambio).
+    det = _detector(stop_atr_multiplicador=0.5)
+    det.procesar_barra(_v(0, high=10.0, low=2.0, close=9.0), atr14=4.0)
+    det.procesar_barra(_v(1, high=9.0, low=6.0, close=8.0), atr14=4.0)
+
+    evento = det.procesar_barra(_v(2, high=10.5, low=9.0, close=10.3), atr14=4.0)
+
+    assert evento.stop == 6.0  # el técnico ya ganaba, el piso no lo ensancha
 
 
 def test_barra1_wrb_ratio_escala_con_el_rango_de_la_barra1():

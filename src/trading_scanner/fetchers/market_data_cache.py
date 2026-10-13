@@ -219,6 +219,7 @@ def _crear_detector_3bp(config: ScanConfig, timeframe: str) -> Detector3BP:
         n_invalidacion=getattr(config, f"bp34_n_invalidacion_{timeframe}"),
         ventana_inicio_barras=getattr(config, f"bp34_ventana_inicio_barras_{timeframe}"),
         volumen_confirmado_mult=config.bp34_volumen_confirmado_mult,
+        stop_atr_multiplicador=config.stop_atr_multiplicador,
     )
 
 

@@ -283,15 +283,126 @@ _on_evento_3bp`), mismo patrón que `bp34_stop_min_pct`. `trading-scanner-optimi
 
 ---
 
+## Ronda 6 (2026-10-01/13) — bug real del stop: invalida las Rondas 1-5, y el fix lo corrige
+
+### El bug
+
+Revisando el primer trade en vivo con la config de la Ronda 5 (BZ, 15m, entry=14.56, stop=14.14),
+el trader pegó el texto original del curso (Live Traders, capítulo "3 & 4 Bar Plays"), que dice:
+
+> "Bar #3 or #4 is the trigger bar (entry & expansion bar), the stop loss goes under the lowest
+> bar (Bar #2 or Bar #3)"
+
+Es decir: el stop va bajo el low del **grupo** (barra 2, o 2-3), no bajo la barra 1. Nuestra propia
+spec (`docs/spec_modulo_3bp_4bp.md`) dice exactamente lo mismo: "Stop: mínimo del grupo de barras
+(2, o 2-3)". El código, sin embargo, hacía:
+
+```python
+stop = min([self._barra1.low] + [b.low for b in self._grupo])
+```
+
+**Prueba matemática de que esto era siempre `barra1.low`, nunca el grupo:** la condición para que
+una barra entre al grupo (`_bar_confirma_grupo`) exige `vela.low >= punto_medio_barra1`, y
+`punto_medio_barra1 = barra1.low + 0.5×rango_barra1 > barra1.low` siempre (barra1 tiene rango
+positivo por ser WRB). Por construcción, el low de cualquier barra del grupo es **siempre mayor**
+que `barra1.low` — el término del grupo nunca podía ganarle a `barra1.low` en ese `min()`. El stop
+quedaba siempre más ancho de lo que pide tanto el curso como la propia spec del proyecto. No había
+ningún comentario ni commit que documentara esto como decisión deliberada (el commit original,
+`964f209`, documenta otras dos interpretaciones no literales de la spec, pero no esta).
+
+**Segundo gap relacionado:** la spec dice que 3BP debería reusar la regla R2 del clasificador de 6
+criterios (`stop = max(ATR14×1.5, nivel_técnico)`) — ese piso de ATR nunca se había implementado
+para 3BP, solo existía el nivel técnico (y encima mal calculado).
+
+**Por qué invalida las Rondas 1-5:** el stop alimenta `target = entry + (entry-stop)×target_r`, y
+el R de cada trade se mide contra `entry-stop`. Con el stop sistemáticamente más ancho, todas las
+cifras de expectancy/PF/win rate/la cuenta de $300/los filtros de ATR%/WRB/tier de las Rondas 1-5
+quedan calculadas sobre un stop distinto al correcto. La metodología (walker, costos, filtro de
+horario, simulación de cuenta) sigue siendo válida — los números puntuales, no.
+
+### El fix, en dos pasos
+
+**Paso 1 — stop = mínimo del grupo, sin barra 1** (commit pendiente al cerrar esta ronda):
+```python
+stop = min(b.low for b in self._grupo)
+```
+Recalibración completa (studies `3bp_15m_stop_fix_v1` / `3bp_5m_stop_fix_v1`, mismos flags que la
+Ronda 2/3/5: `--slippage-bps 5 --stop-min-pct 0.6 --solo-confirmado`, sesión regular 90min):
+
+| | 15m | 5m |
+|---|---|---|
+| Trades | 1758 | 3173 |
+| Win rate | 32.8% | 25.9% |
+| Profit factor | **0.92** | **0.88** |
+| Expectancy | **-0.055R** | **-0.095R** |
+| Net profit | -97.2R | -300.8R |
+
+**Resultado: con el stop corregido (sin el piso de ATR todavía), la expectativa da negativa en los
+dos timeframes.** El edge positivo de las Rondas anteriores era, en gran parte, un artefacto del
+stop mal puesto.
+
+**Paso 2 — agregar el piso de ATR14×1.5 (regla R2)**, reusando `ScanConfig.stop_atr_multiplicador`
+(campo ya existente, compartido con el clasificador de 6 criterios):
+```python
+stop_tecnico = min(b.low for b in self._grupo)
+distancia_tecnica = entry - stop_tecnico
+distancia_minima = stop_atr_multiplicador * atr14  # atr14 de la barra gatillo
+stop = entry - max(distancia_tecnica, distancia_minima)
+```
+Recalibración completa (studies `3bp_15m_stop_fix_v2` / `3bp_5m_stop_fix_v2`, mismos flags):
+
+| | 15m | 5m |
+|---|---|---|
+| Trades | 1301 | 676 |
+| Win rate | 38.8% | 32.4% |
+| Profit factor | **1.20** | **1.41** |
+| Expectancy | **+0.117R** | **+0.282R** |
+| Max drawdown | 38.3R | 30.8R |
+
+**El piso de ATR rescata el edge en los dos timeframes.** 5m queda con mejores métricas que 15m
+(expectancy, PF, drawdown), pero con bastante menos señales (676 vs 1301) — una muestra más chica.
+
+**Parámetros ganadores finales** (ambos con `wrb_multiplicador` pegado cerca del piso del rango de
+búsqueda 1.0-4.0 otra vez — sigue sin investigarse por qué, ver pendientes):
+
+| Campo | 15m | 5m |
+|---|---|---|
+| wrb_multiplicador | 1.047 | 1.018 |
+| tolerancia_pct | 0.367 | 0.057 |
+| n_invalidacion | 3 | 9 |
+| target_r | 3.372 | 4.885 |
+| ventana_inicio_barras | 7 | 8 |
+| volumen_confirmado_mult | 3.550 | 3.094 |
+
+### ⚠️ Pregunta abierta: ¿sigue siendo 15m el recomendado?
+
+Hasta la Ronda 5, 15m era claramente la opción recomendada (mejor PF/drawdown, 5m con evidencia
+mixta). Con el fix del stop, **5m da mejores números que 15m en expectancy, PF y drawdown** — pero
+con una muestra bastante más chica (676 trades contra 1301) y filtrando mucho más agresivamente
+(de 3173 a 676, un 79% de las señales originales descartadas por el piso de ATR, contra un 26% en
+15m). No se decidió todavía cuál priorizar — queda pendiente para cuando el trader lo revise. La
+config activa (`scan_configs` id=12, `bp34_stop_fix_v2_2026-10-13`) por ahora dejó el campo
+compartido `volumen_confirmado_mult` en el valor de 15m, sin tomar partido todavía.
+
+### Cierre (2026-10-13)
+
+- Config activa actualizada con los parámetros ganadores de ambos timeframes (id=12).
+- Eventos LIVE viejos (el trade de BZ, calculado con el bug) borrados de Turso.
+- El vivo (`main.py`) ya usa el código corregido automáticamente — no hace falta ningún cambio
+  adicional de wireo, el fix está en `Detector3BP` mismo, que alimenta tanto backtest como vivo.
+
+---
+
 ## Qué falta antes de operar esto en serio
 
-1. **El vivo no filtra por horario todavía.** `bp34_entradas_solo_sesion_regular` solo se aplicó al
-   walker de backtest (`walker_3bp.py`); `main.py`/`market_data_cache.py` (wireo en vivo) sigue
-   emitiendo eventos ENTRADA a cualquier hora. Si se adopta esta calibración, hay que llevar la
-   misma regla al vivo — si no, lo que se opera no es lo que se calibró.
-2. **`wrb_multiplicador=1.02` en 5m está pegado al piso del rango de búsqueda** (1.0-4.0) — no
-   investigado si el óptimo real cae fuera del rango o si es sobreajuste. Ya no importa tanto dado
-   que no se recomienda operar 5m, pero documentado por si se retoma.
+1. ~~El vivo no filtra por horario todavía~~ — **resuelto** (`evento_en_ventana_permitida` en
+   `main.py::_on_evento_3bp`, mismo código que usa el walker de backtest).
+2. **`wrb_multiplicador` pegado al piso del rango de búsqueda (1.0-4.0) — ahora en los DOS
+   timeframes, no solo 5m.** Tras el fix de stop (Ronda 6), 15m también convergió cerca de 1.0
+   (1.047) además de 5m (1.018). Con dos calibraciones independientes dando el mismo resultado,
+   esto ya no se puede descartar como ruido de una sola corrida — vale la pena ampliar el rango de
+   búsqueda hacia abajo (ej. 0.5-4.0) en una próxima recalibración para ver si el óptimo real está
+   fuera del rango actual.
 3. **Revalidar contra `universo_real`** (tickers que salieron de verdad en los CSV de ToS
    guardados, no el universo curado de 470+ nombres ya sabidos como volátiles) — mismo caveat que
    arrastra el proyecto desde la calibración del clasificador de 6 criterios en agosto.
@@ -308,10 +419,18 @@ _on_evento_3bp`), mismo patrón que `bp34_stop_min_pct`. `trading-scanner-optimi
    una cuenta más grande hace falta precargar un universo de nombres líquidos/caros de verdad y
    recalibrar `bp34_*` para ese régimen — no asumir que los parámetros de microcaps transfieren.
 8. ~~Filtro por `tier="confirmado"` cuantificado pero no implementado~~ — **implementado 2026-09-29**
-   (`bp34_solo_tier_confirmado`, ver Ronda 5). La calibración de `bp34_*` en sí **no se re-corrió**
-   con el filtro activo — los parámetros ganadores siguen siendo los de la Ronda 2/3, calibrados
-   sin este filtro. Una recalibración completa que optimice `bp34_*` ya con el filtro puesto podría
-   encontrar un óptimo distinto (quedaría para una próxima iteración si se busca exprimir más).
+   (`bp34_solo_tier_confirmado`). Ya incluido en todas las recalibraciones de la Ronda 6.
+9. **[Ronda 6] ¿15m o 5m?** — la pregunta abierta de la Ronda 6: 5m ahora rinde mejor en expectancy/
+   PF/drawdown que 15m, pero con menos señales (676 vs 1301) y filtrando mucho más agresivo (79% de
+   las señales originales descartadas por el piso de ATR, contra 26% en 15m). No decidido todavía.
+10. **[Ronda 6] No se corrió la simulación de cuenta de $300 ni la validación split-half con los
+    números nuevos (post-fix de stop).** Las de la Ronda 3/4 quedaron con el stop viejo — antes de
+    confiar en estos números para operar, conviene repetir esos dos chequeos con los eventos
+    corregidos (eventos ya generados por las corridas de la Ronda 6, reusables sin volver a correr
+    el walker).
+11. **[Ronda 6] `bp34_volumen_confirmado_mult` compartido entre timeframes, sin resolver del todo**
+    — la config activa quedó con el valor de 15m (3.55); 5m pedía 3.09. Mismo problema de siempre
+    con este campo compartido, ahora más relevante dado que la pregunta 15m-vs-5m sigue abierta.
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 

@@ -158,7 +158,7 @@ def test_caminar_dia_detecta_entrada_y_la_resuelve_por_target(monkeypatch):
         _v(base + timedelta(minutes=5), high=10.0, low=2.0, close=9.0),   # barra 1 (WRB, rango 8 = 2×ATR)
         _v(base + timedelta(minutes=10), high=9.0, low=6.0, close=8.0),   # barra 2, confirma grupo (pm=6)
         _v(base + timedelta(minutes=15), high=11.0, low=9.5, close=10.8, volume=250_000.0),  # gatillo, rompe 10 -> ENTRADA
-        _v(base + timedelta(minutes=20), high=14.5, low=13.9, close=14.2),  # toca target (10 + 8×0.5=14)
+        _v(base + timedelta(minutes=20), high=14.5, low=13.9, close=14.2),  # toca target (10 + 4×0.5=12)
     ]
 
     eventos = walker_3bp._caminar_dia(
@@ -173,15 +173,15 @@ def test_caminar_dia_detecta_entrada_y_la_resuelve_por_target(monkeypatch):
     assert ev.tipo == "3BP"
     assert ev.tier == "confirmado"  # volumen del gatillo (250k) >= 2 × 100k
     assert ev.entry == 10.0
-    assert ev.stop == 2.0
-    assert ev.target == pytest.approx(14.0)
+    assert ev.stop == 6.0  # low del grupo (barra 2), no el de barra1 (2.0) — ver fix 2026-10-01
+    assert ev.target == pytest.approx(12.0)
     assert ev.resultado == ResultadoBp34.TARGET
     assert ev.resultado_r == pytest.approx(0.5)
 
 
 def _velas_escenario_3bp() -> list[Vela]:
     """Mismo escenario que test_caminar_dia_detecta_entrada_y_la_resuelve_por_target:
-    entry=10, stop=2 (distancia 80% del precio), target chico que se toca."""
+    entry=10, stop=6 (distancia 40% del precio), target chico que se toca."""
     base = datetime(2026, 1, 2, 9, 30)
     return [
         _v(base, high=1.0, low=0.5, close=0.8),
@@ -193,10 +193,10 @@ def _velas_escenario_3bp() -> list[Vela]:
 
 
 def test_caminar_dia_descarta_entradas_con_stop_mas_corto_que_el_minimo(monkeypatch):
-    # distancia al stop = (10 - 2) / 10 = 80% del precio
+    # distancia al stop = (10 - 6) / 10 = 40% del precio
     eventos = walker_3bp._caminar_dia(
         _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
-        _config_3bp(bp34_stop_min_pct=90.0), FuenteDatos.HISTORICO,
+        _config_3bp(bp34_stop_min_pct=50.0), FuenteDatos.HISTORICO,
     )
     assert eventos == []
 
@@ -204,7 +204,7 @@ def test_caminar_dia_descarta_entradas_con_stop_mas_corto_que_el_minimo(monkeypa
 def test_caminar_dia_conserva_entradas_con_stop_igual_o_mayor_al_minimo(monkeypatch):
     eventos = walker_3bp._caminar_dia(
         _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
-        _config_3bp(bp34_stop_min_pct=80.0), FuenteDatos.HISTORICO,  # justo en el borde: se conserva
+        _config_3bp(bp34_stop_min_pct=40.0), FuenteDatos.HISTORICO,  # justo en el borde: se conserva
     )
     assert len(eventos) == 1
 
@@ -250,13 +250,13 @@ def test_caminar_dia_conserva_confirmado_aunque_se_pida_solo_confirmado():
 
 
 def test_caminar_dia_aplica_el_slippage_de_la_config(monkeypatch):
-    # target = 14, entry = 10, stop_dist = 8: costo = 0.001 * (14 + 10) / 8 = 0.003R
+    # target = 12, entry = 10, stop_dist = 4: costo = 0.001 * (12 + 10) / 4 = 0.0055R
     eventos = walker_3bp._caminar_dia(
         _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
         _config_3bp(slippage_bps=10.0), FuenteDatos.HISTORICO,
     )
     assert eventos[0].resultado == ResultadoBp34.TARGET
-    assert eventos[0].resultado_r == pytest.approx(0.5 - 0.003)
+    assert eventos[0].resultado_r == pytest.approx(0.5 - 0.0055)
 
 
 def test_caminar_dia_sin_patron_no_genera_eventos(monkeypatch):
@@ -455,7 +455,7 @@ def test_el_contexto_de_premarket_habilita_la_barra_ancha_de_las_9_30():
         entradas_desde=len(premarket),
     )
     assert len(con_contexto) == 1
-    assert con_contexto[0].entry == 12.0 and con_contexto[0].stop == 10.0
+    assert con_contexto[0].entry == 12.0 and con_contexto[0].stop == 11.0  # low del grupo, no el de barra1 (10.0)
 
     solo_sesion = walker_3bp._caminar_dia(regular, "AAPL", "5m", date(2026, 1, 2), cfg, FuenteDatos.HISTORICO)
     assert solo_sesion == []

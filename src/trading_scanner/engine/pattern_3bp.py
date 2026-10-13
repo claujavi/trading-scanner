@@ -78,6 +78,15 @@ class Detector3BP:
     n_invalidacion: int
     ventana_inicio_barras: int
     volumen_confirmado_mult: float
+    # Regla R2 (ver docs/spec_modulo_3bp_4bp.md): el stop final es el MAYOR
+    # entre ATR14×este_multiplicador y la distancia al nivel técnico (low del
+    # grupo) — mismo campo que ya usa el clasificador de 6 criterios
+    # (ScanConfig.stop_atr_multiplicador, default 1.5), reusado tal cual acá
+    # ("no es una regla nueva, es un insumo nuevo a la regla que ya existe").
+    # Evita stops más ajustados que lo que la volatilidad normal del ticker
+    # ya produce como ruido. Default = el mismo de ScanConfig, para no romper
+    # los _detector() de test que no lo pasan.
+    stop_atr_multiplicador: float = 1.5
 
     estado: Estado3BP = Estado3BP.SIN_PATRON
     _rangos_previos: list[float] = field(default_factory=list)
@@ -185,7 +194,21 @@ class Detector3BP:
                 # más largos (ver tope aplicado más abajo).
                 tipo = "3BP" if len(self._grupo) == 1 else "4BP"
                 entry = self._nivel_gatillo()
-                stop = min([self._barra1.low] + [b.low for b in self._grupo])
+                # Stop = mínimo del GRUPO (barra 2, o 2-3) — nunca barra1.low.
+                # Bug real encontrado 2026-10-01: la versión anterior incluía
+                # barra1.low en el min(), pero _bar_confirma_grupo() exige
+                # vela.low >= punto_medio_barra1 > barra1.low siempre (barra1
+                # tiene rango positivo por ser WRB) — por construcción ningún
+                # low del grupo puede ganarle nunca a barra1.low en ese min(),
+                # así que el stop terminaba siempre en barra1.low: mucho más
+                # ancho de lo que pide tanto la spec ("mínimo del grupo de
+                # barras") como el curso ("stop goes under the lowest bar —
+                # Bar #2 or Bar #3"). self._grupo siempre tiene >= 1 barra acá
+                # (se llega a ENTRADA solo desde ESPERANDO_ENTRADA).
+                stop_tecnico = min(b.low for b in self._grupo)
+                distancia_tecnica = entry - stop_tecnico
+                distancia_minima = self.stop_atr_multiplicador * atr14  # atr14 de la barra gatillo
+                stop = entry - max(distancia_tecnica, distancia_minima)
                 tier = "sin_confirmar"
                 if volumen_promedio and volumen_promedio > 0:
                     if vela.volume >= self.volumen_confirmado_mult * volumen_promedio:
