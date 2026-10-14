@@ -534,7 +534,29 @@ MANTENIENDO los parámetros `bp34_*` ya vigentes de la Ronda 6** (no los de la r
 de esta ronda, que quedan descartados — peores en los dos timeframes). Los resultados de la
 recalibración con el filtro forzado (`3bp_{15m,5m}_ema21_v1`, tabla de la sección anterior) no se
 usan para nada productivo — quedan documentados solo como evidencia de la trampa metodológica.
-**Pendiente de confirmación del usuario antes de tocar la config activa de Turso.**
+
+### Simulación de cuenta de $300 — el efecto compone aún más fuerte a nivel cuenta
+
+Mismo mecanismo de la Ronda 3/4/6 (cuenta compartida, 3 posiciones, riesgo≤1%, corte -3%/día,
+bootstrap de 3000 muestras), ahora comparando con/sin el filtro EMA21 sobre los mismos eventos de
+la tabla anterior:
+
+| Variante | Retorno SIN filtro | Retorno CON filtro EMA21 | DD máx. SIN | DD máx. CON | P(perder) SIN → CON |
+|---|---|---|---|---|---|
+| 15m sola | +70.8% | **+126.6%** | 17.9% | **8.7%** | 2% → **0%** |
+| 5m sola | +51.2% | **+85.7%** | 17.4% | **11.2%** | 4% → **0%** |
+| 15m, riesgo≤2% | +80.6% | **+153.7%** | 20.8% | **9.8%** | 2% → **0%** |
+
+**El efecto compone más fuerte a nivel cuenta que a nivel trade individual** — el filtro casi
+duplica el retorno en las tres variantes y reduce el drawdown máximo a menos de la mitad en todas,
+con `P(perder)` (bootstrap, 3000 muestras) bajando a 0% en las tres. Confirma con margen todavía
+más amplio la decisión de activar el filtro.
+
+### Cierre (2026-10-14)
+
+- Config activa en Turso actualizada (id=13): `bp34_requiere_precio_sobre_ema21=True`, manteniendo
+  intactos los `bp34_*` de la Ronda 6 (wrb_multiplicador 1.047/15m, 1.018/5m, y el resto).
+- Código + tests + esta documentación commiteados y pusheados (`4e267ea`).
 
 ---
 
@@ -572,13 +594,12 @@ usan para nada productivo — quedan documentados solo como evidencia de la tram
     que el edge se sostiene en ambas mitades del rango temporal. Pendiente.
 11. ~~`bp34_volumen_confirmado_mult` compartido entre timeframes, sin resolver del todo~~ —
     **resuelto**: queda en el valor de 15m, ya no es una decisión pendiente (ver punto 9).
-12. **[Ronda 7] Filtro `bp34_requiere_precio_sobre_ema21`: validado, recomendado, pendiente de
-    activar en producción.** La recalibración con Optuna forzando el filtro dio peor resultado
-    (trampa metodológica — Optuna buscó en una región distinta y no la optimizó tan bien con el
-    mismo presupuesto), pero el filtro aplicado post-hoc sobre los parámetros YA ganadores de la
-    Ronda 6 confirma el hallazgo: casi duplica la expectancy en 15m, +60% en 5m. Falta la
-    confirmación del usuario para activarlo en la config de Turso (manteniendo los `bp34_*` de la
-    Ronda 6, no los de esta recalibración).
+12. ~~[Ronda 7] Filtro `bp34_requiere_precio_sobre_ema21` implementado pero sin recalibrar~~ —
+    **resuelto y activado (2026-10-14)**: la recalibración con Optuna forzando el filtro dio peor
+    resultado (trampa metodológica, ver Ronda 7), pero el filtro post-hoc sobre los `bp34_*` YA
+    ganadores de la Ronda 6 casi duplica la expectancy y el retorno de la cuenta de $300 en los dos
+    timeframes, con drawdown a menos de la mitad y `P(perder)`→0% en el bootstrap. Activado en la
+    config de producción (id=13) manteniendo los `bp34_*` de la Ronda 6.
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 
