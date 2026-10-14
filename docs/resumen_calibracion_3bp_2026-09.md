@@ -422,6 +422,122 @@ decisión pendiente.
 
 ---
 
+## Ronda 7 (2026-10-13) — el indicador del manual ("r21ema"): la señal más fuerte encontrada
+
+### La pregunta
+
+Repasando el manual del curso (Live Traders, cap. "3 & 4 Bar Plays") en busca de algo que no se
+hubiera probado todavía: en **todos** los gráficos de ejemplo de 3BP/4BP del manual aparece una
+línea de EMA21 de referencia (etiquetada "r21ema" en las capturas), aunque no figura en la lista
+numerada de criterios del patrón — es parte del método más amplio del curso ("primero sesgo de
+tendencia en un timeframe mayor, después el patrón para el timing de entrada"), nunca antes
+evaluado en este módulo (distinto del cruce EMA9/21 del clasificador de 6 criterios, probado sin
+éxito en la Ronda 1.5).
+
+### Validación (antes de tocar código)
+
+Con los eventos post-fix ya cacheados (`eventos_3bp_{15m,5m}_postfix.pkl`, Ronda 6 paso 2) se trajo
+la serie propia de cada ticker/timeframe (ya en `backtest_data/`, sin pegarle a Schwab) y se calculó
+la EMA21 "as of" el momento de cada entrada:
+
+- **"Precio > EMA21 ascendente" (el r21ema literal) no agrega nada sobre "precio > EMA21" solo** —
+  la condición de pendiente no mejora el filtro, solo lo complica. Se descartó.
+- **"Precio > EMA21" solo**, probado con split-half (dos mitades cronológicas del período, 15m y 5m
+  por separado — 4 ventanas en total): las entradas con **precio ≤ EMA21 dan expectancy fuertemente
+  negativa en las 4 ventanas** (-0.42R a -0.66R, profit factor 0.25-0.53). Es la señal más fuerte y
+  consistente encontrada en todo el módulo hasta ahora — más que ATR% (Ronda 1.5), WRB ratio o tier
+  (Ronda 5), que daban evidencia mixta o débil entre timeframes.
+
+### Implementación
+
+Confirmado el hallazgo, se implementó como filtro real, siguiendo el mismo patrón arquitectónico ya
+usado para `bp34_solo_tier_confirmado` y `bp34_stop_min_pct`: el detector (`Detector3BP`) solo
+**calcula y expone** el dato (`EventoPatron3BP.precio_sobre_ema21`, EMA21 propia del timeframe,
+actualizada barra a barra de forma incremental O(1), igual que ya se hace con ATR14/volumen) — la
+decisión de filtrar o no vive afuera, en `walker_3bp.py::_caminar_dia` (backtest) y
+`main.py::_on_evento_3bp` (vivo), controlada por el nuevo campo `ScanConfig.
+bp34_requiere_precio_sobre_ema21` (default `False`, no cambia el comportamiento de ninguna
+calibración ya hecha hasta que se active explícitamente).
+
+- `None` (menos de 21 barras de contexto vistas todavía) se trata igual que `False` al filtrar —
+  "no se pudo confirmar que el precio esté sobre la EMA21" descarta la entrada, mismo criterio
+  conservador que el resto del sistema (Regla 5 del clasificador de 6 criterios).
+- Columna nueva `precio_sobre_ema21` en `bp34_eventos` (Turso), propagada tanto en backtest como en
+  vivo, para poder auditar/reanalizar después sin tener que recalcularla.
+- Flag `--requiere-ema21/--sin-ema21` agregado a `trading-scanner-optimize-3bp`.
+- Tests nuevos en `test_pattern_3bp.py` (cálculo de la EMA21 incremental, los 3 estados
+  `None`/`True`/`False`, y que no se resetea con el patrón) y `test_walker_3bp.py` (el filtro
+  descarta `None` y conserva por default). Suite completa: 286 tests, 0 fallos.
+
+### Recalibración con el filtro activado (2026-10-13/14) — resultado contradictorio con la validación
+
+Se corrió `trading-scanner-optimize-3bp` para los dos timeframes con
+`--requiere-ema21` activado (mismos flags que la Ronda 6 paso 2: `--slippage-bps 5 --stop-min-pct
+0.6 --solo-confirmado --sesion-regular --ventana-entrada-min 90`, studies `3bp_15m_ema21_v1` /
+`3bp_5m_ema21_v1`, 50 trials c/u, mismo universo ~515 tickers):
+
+| | 15m sin filtro (Ronda 6) | 15m con filtro (Ronda 7) | 5m sin filtro (Ronda 6) | 5m con filtro (Ronda 7) |
+|---|---|---|---|---|
+| Trades | 1301 | **570** | 676 | **430** |
+| Win rate | 38.8% | 38.6% | 32.4% | 34.0% |
+| Profit factor | **1.20** | 1.17 | **1.41** | 1.33 |
+| Expectancy | **+0.117R** | +0.099R | **+0.282R** | +0.229R |
+| Max drawdown | 38.3R | 43.3R | 30.8R | **20.2R** |
+
+**El filtro empeora (o en el mejor caso, no mejora) el resultado en los dos timeframes** —
+contradice directamente la validación split-half de más arriba, que mostraba "precio ≤ EMA21" como
+la señal más negativa de todo el módulo. 5m mejora el drawdown (30.8R → 20.2R) pero a costa de
+expectancy y PF; 15m empeora en las tres métricas de calidad (PF, expectancy, drawdown) y además
+pierde más de la mitad de las señales (1301 → 570).
+
+**Por qué no implica que el hallazgo de la validación esté mal — son dos preguntas distintas:**
+- La validación split-half midió "¿filtrar por EMA21 mejora los trades de la config GANADORA de la
+  Ronda 6, sin tocar nada más?" — una pregunta de filtro aislado sobre parámetros fijos.
+- Esta recalibración midió "¿cuál es la MEJOR combinación posible de `bp34_*` cuando el filtro es
+  obligatorio?" — Optuna, forzado a cumplir el filtro, explora una región del espacio de parámetros
+  distinta (`wrb_multiplicador` saltó de ~1.0-1.05 en la Ronda 6 a **3.54** en 15m con el filtro —
+  un régimen de WRB mucho más exigente, no una variación menor) y con el mismo presupuesto de 50
+  trials puede simplemente no haber encontrado tan bien el óptimo de esa región nueva como encontró
+  el óptimo de la región sin filtro.
+- Dicho de otro modo: no se probó "los mismos parámetros ganadores de la Ronda 6 + el filtro
+  EMA21 encima", que es la comparación directamente equivalente a la validación split-half. Se
+  probó "el mejor óptimo encontrable con el filtro obligatorio", que es una pregunta distinta y
+  más dura de buscar (mismo presupuesto, espacio más restringido).
+
+### Resolviendo la contradicción: el filtro post-hoc sobre los parámetros FIJOS de la Ronda 6
+
+Se corrió la prueba que falta arriba: tomar los eventos ya generados con los parámetros ganadores
+de la Ronda 6 (fijos, sin que Optuna los toque) y aplicar el filtro EMA21 como corte post-hoc —
+exactamente la pregunta que mide la validación split-half, pooled sobre todo el período (no
+dividido en mitades):
+
+| | 15m TODOS (Ronda 6) | 15m + filtro EMA21 | 5m TODOS (Ronda 6) | 5m + filtro EMA21 |
+|---|---|---|---|---|
+| Trades | 1265 | 1129 | 630 | 546 |
+| Win rate | 36.5% | **38.8%** | 27.5% | **29.3%** |
+| Profit factor | 1.11 | **1.24** | 1.18 | **1.30** |
+| Expectancy | +0.071R | **+0.140R** | +0.138R | **+0.221R** |
+| Net profit | +89.6R | **+158.4R** | +87.2R | **+120.5R** |
+
+**Confirma el hallazgo de la validación: el filtro, aplicado sobre la config que YA funciona, casi
+duplica la expectancy en 15m (+0.071R → +0.140R) y la mejora un 60% en 5m (+0.138R → +0.221R), con
+una pérdida de trades moderada (11% en 15m, 13% en 5m) — y el net profit SUBE en los dos a pesar de
+operar menos.** La contradicción de la sección anterior no era del hallazgo: era de la metodología
+de recalibración. Al forzar el filtro y dejar que Optuna buscara de nuevo todo el espacio de
+`bp34_*`, terminó en una región distinta (`wrb_multiplicador` saltó a 3.54 en 15m) que con 50
+trials no llegó a optimizarse tan bien como la región sin filtro — no porque el filtro sea malo,
+sino porque la pregunta que esa búsqueda contestó ("mejor óptimo posible con el filtro obligatorio
+desde cero") no es la misma que "¿mejora la config que ya tengo si le agrego este filtro encima?".
+
+**Recomendación: activar `bp34_requiere_precio_sobre_ema21=True` en la config de producción,
+MANTENIENDO los parámetros `bp34_*` ya vigentes de la Ronda 6** (no los de la recalibración Optuna
+de esta ronda, que quedan descartados — peores en los dos timeframes). Los resultados de la
+recalibración con el filtro forzado (`3bp_{15m,5m}_ema21_v1`, tabla de la sección anterior) no se
+usan para nada productivo — quedan documentados solo como evidencia de la trampa metodológica.
+**Pendiente de confirmación del usuario antes de tocar la config activa de Turso.**
+
+---
+
 ## Qué falta antes de operar esto en serio
 
 1. ~~El vivo no filtra por horario todavía~~ — **resuelto** (`evento_en_ventana_permitida` en
@@ -456,6 +572,13 @@ decisión pendiente.
     que el edge se sostiene en ambas mitades del rango temporal. Pendiente.
 11. ~~`bp34_volumen_confirmado_mult` compartido entre timeframes, sin resolver del todo~~ —
     **resuelto**: queda en el valor de 15m, ya no es una decisión pendiente (ver punto 9).
+12. **[Ronda 7] Filtro `bp34_requiere_precio_sobre_ema21`: validado, recomendado, pendiente de
+    activar en producción.** La recalibración con Optuna forzando el filtro dio peor resultado
+    (trampa metodológica — Optuna buscó en una región distinta y no la optimizó tan bien con el
+    mismo presupuesto), pero el filtro aplicado post-hoc sobre los parámetros YA ganadores de la
+    Ronda 6 confirma el hallazgo: casi duplica la expectancy en 15m, +60% en 5m. Falta la
+    confirmación del usuario para activarlo en la config de Turso (manteniendo los `bp34_*` de la
+    Ronda 6, no los de esta recalibración).
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 

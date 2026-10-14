@@ -309,6 +309,82 @@ def test_tier_sin_confirmar_si_no_se_provee_volumen_promedio():
     assert evento.tier == "sin_confirmar"
 
 
+# ── precio_sobre_ema21 ("r21ema" del manual, ver EventoPatron3BP) ────────
+
+
+def _filler(desde: int, hasta: int, close: float) -> list:
+    """Barras planas (rango 0, nunca califican como WRB) solo para darle
+    contexto a la EMA21 sin interferir con la máquina de estados del
+    patrón en sí."""
+    return [_v(i, high=close, low=close, close=close) for i in range(desde, hasta)]
+
+
+def test_precio_sobre_ema21_es_none_sin_las_21_barras_de_contexto():
+    """Mismo escenario que test_dispara_3bp_con_una_sola_barra_de_grupo —
+    solo 3 barras procesadas en total, muy por debajo de las 21 que pide
+    la EMA para considerarse calculable."""
+    det = _detector()
+    det.procesar_barra(_v(0, high=10.0, low=2.0, close=9.0), atr14=4.0)
+    det.procesar_barra(_v(1, high=9.0, low=6.0, close=8.0), atr14=4.0)
+
+    evento = det.procesar_barra(_v(2, high=10.5, low=9.0, close=10.3), atr14=4.0)
+
+    assert evento.estado == Estado3BP.ENTRADA
+    assert evento.precio_sobre_ema21 is None
+
+
+def test_precio_sobre_ema21_true_cuando_la_barra_gatillo_cierra_por_encima():
+    """18 barras planas en 5.0 (EMA converge a 5.0) + barra1/barra2/gatillo
+    = exactamente 21 barras al momento del gatillo — justo en el umbral.
+    EMA21 sube a ~6.03 por las últimas 3 barras, pero el close del gatillo
+    (10.3) queda por encima igual."""
+    det = _detector()
+    for vela in _filler(0, 18, close=5.0):
+        det.procesar_barra(vela, atr14=4.0)
+    det.procesar_barra(_v(18, high=10.0, low=2.0, close=9.0), atr14=4.0)   # barra1
+    det.procesar_barra(_v(19, high=9.0, low=6.0, close=8.0), atr14=4.0)    # barra2 (grupo)
+
+    evento = det.procesar_barra(_v(20, high=10.5, low=9.0, close=10.3), atr14=4.0)  # gatillo, barra #21
+
+    assert evento.estado == Estado3BP.ENTRADA
+    assert evento.precio_sobre_ema21 is True
+
+
+def test_precio_sobre_ema21_false_cuando_la_barra_gatillo_cierra_por_debajo():
+    """Mismo escenario, pero con 18 barras planas en 20.0 — la EMA21 arranca
+    tan alta que, aunque bajando, sigue por encima del close del gatillo
+    (17.3 > 10.3)."""
+    det = _detector()
+    for vela in _filler(0, 18, close=20.0):
+        det.procesar_barra(vela, atr14=4.0)
+    det.procesar_barra(_v(18, high=10.0, low=2.0, close=9.0), atr14=4.0)   # barra1
+    det.procesar_barra(_v(19, high=9.0, low=6.0, close=8.0), atr14=4.0)    # barra2 (grupo)
+
+    evento = det.procesar_barra(_v(20, high=10.5, low=9.0, close=10.3), atr14=4.0)  # gatillo, barra #21
+
+    assert evento.estado == Estado3BP.ENTRADA
+    assert evento.precio_sobre_ema21 is False
+
+
+def test_ema21_se_actualiza_en_cada_barra_sin_importar_el_estado_del_patron():
+    """La EMA21 no se resetea con _reset() del patrón — sigue acumulando
+    contexto aunque el patrón se invalide varias veces en el medio. Prueba
+    indirecta: invalidar el patrón un par de veces antes de las 21 barras
+    y confirmar que igual converge (no vuelve a contar desde cero)."""
+    det = _detector()
+    det.procesar_barra(_v(0, high=10.0, low=2.0, close=9.0), atr14=4.0)   # barra1 -> POSIBLE
+    det.procesar_barra(_v(1, high=3.0, low=1.0, close=1.5), atr14=4.0)    # invalida -> SIN_PATRON
+    for vela in _filler(2, 18, close=5.0):
+        det.procesar_barra(vela, atr14=4.0)
+    det.procesar_barra(_v(18, high=10.0, low=2.0, close=9.0), atr14=4.0)  # barra1 de nuevo
+    det.procesar_barra(_v(19, high=9.0, low=6.0, close=8.0), atr14=4.0)   # barra2 (grupo)
+
+    evento = det.procesar_barra(_v(20, high=10.5, low=9.0, close=10.3), atr14=4.0)  # gatillo, barra #21
+
+    assert evento.estado == Estado3BP.ENTRADA
+    assert evento.precio_sobre_ema21 is not None  # ya convergió — no se reinició con el _reset()
+
+
 # ── SeguidorPosicion3BP — seguimiento en vivo, vela a vela ────────────────
 # Misma semántica que backtest/walker_3bp.py::_resolver_entrada, pero
 # alimentada una vela por vez en vez de recibir de una sola vez todas las

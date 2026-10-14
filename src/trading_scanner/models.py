@@ -249,6 +249,19 @@ class ScanConfig(BaseModel):
     # modos, ver el resumen. Default False = comportamiento anterior (tier
     # puramente informativo, no descarta nada).
     bp34_solo_tier_confirmado: bool = False
+    # True = descarta entradas con el precio (close de la barra gatillo) por
+    # debajo de la EMA21 propia del timeframe de la entrada — el "r21ema" del
+    # manual (Live Traders, cap. 3: aparece en todos los ejemplos de 3BP/4BP
+    # como referencia de sesgo de tendencia, aunque no está en la lista
+    # numerada de criterios del patrón). Validado con datos reales
+    # (2026-10-13, split-half en 15m y 5m, 4 ventanas): entradas con precio
+    # <= EMA21 dan expectancy fuertemente negativa (-0.42R a -0.66R, PF
+    # 0.25-0.53) en TODAS las ventanas probadas — la señal más fuerte y
+    # consistente encontrada en el módulo hasta ahora, más que ATR%/WRB/tier.
+    # Pedir además que la EMA21 esté ascendente (el "r21ema" literal) no
+    # agrega nada sobre "precio > EMA21" solo — se dejó afuera a propósito,
+    # más simple sin perder señal. Default False = comportamiento anterior.
+    bp34_requiere_precio_sobre_ema21: bool = False
 
     # ── Validaciones cruzadas entre campos relacionados ──────────────────────
     @model_validator(mode="after")
@@ -451,6 +464,11 @@ class Bp34Evento(BaseModel):
     # — ver engine/pattern_3bp.py::EventoPatron3BP.barra1_wrb_ratio. Informativo,
     # no participa de ninguna decisión del detector ni del walker.
     barra1_wrb_ratio: Optional[float] = None
+    # Close de la barra gatillo > EMA21 propia del timeframe — ver
+    # engine/pattern_3bp.py::EventoPatron3BP.precio_sobre_ema21. El filtro
+    # real (ScanConfig.bp34_requiere_precio_sobre_ema21) se aplica afuera del
+    # detector, en walker_3bp.py/main.py.
+    precio_sobre_ema21: Optional[bool] = None
 
     # ── Resultado del seguimiento post-señal ─────────────────────────────────
     resultado: ResultadoBp34 = ResultadoBp34.ABIERTO

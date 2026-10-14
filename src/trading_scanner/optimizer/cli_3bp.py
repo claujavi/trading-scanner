@@ -165,6 +165,15 @@ def run(
             "en 15m, evidencia mixta en 5m."
         ),
     ),
+    requiere_ema21: bool = typer.Option(
+        False,
+        "--requiere-ema21/--sin-ema21",
+        help=(
+            "Descarta entradas con precio <= EMA21 propia del timeframe (bp34_requiere_precio_sobre_ema21). "
+            "Ver docs/resumen_calibracion_3bp_2026-09.md Ronda 7: la señal más fuerte y consistente "
+            "encontrada en el módulo hasta ahora (split-half en 15m y 5m)."
+        ),
+    ),
     sesion_regular: bool = typer.Option(
         True,
         "--sesion-regular/--todas-las-horas",
@@ -243,6 +252,7 @@ def run(
     overrides_config["bp34_entradas_solo_sesion_regular"] = sesion_regular
     overrides_config["bp34_ventana_entrada_minutos"] = ventana_entrada_min
     overrides_config["bp34_solo_tier_confirmado"] = solo_confirmado
+    overrides_config["bp34_requiere_precio_sobre_ema21"] = requiere_ema21
     if overrides_config:
         console.log(f"[cyan]Overrides sobre la config activa: {overrides_config}[/cyan]")
 

@@ -249,6 +249,27 @@ def test_caminar_dia_conserva_confirmado_aunque_se_pida_solo_confirmado():
     assert eventos[0].tier == "confirmado"
 
 
+def test_caminar_dia_descarta_si_requiere_ema21_sin_contexto_suficiente(monkeypatch):
+    """_velas_escenario_3bp() tiene solo 5 barras — muy por debajo de las 21
+    que pide la EMA para considerarse calculable, así que precio_sobre_ema21
+    queda en None. Con el filtro pedido explícitamente, None no cuenta como
+    "pasa" (ver walker_3bp: `is not True` descarta None y False por igual)."""
+    eventos = walker_3bp._caminar_dia(
+        _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
+        _config_3bp(bp34_requiere_precio_sobre_ema21=True), FuenteDatos.HISTORICO,
+    )
+    assert eventos == []
+
+
+def test_caminar_dia_conserva_entrada_sin_ema21_calculable_por_default():
+    eventos = walker_3bp._caminar_dia(
+        _velas_escenario_3bp(), "AAPL", "5m", date(2026, 1, 2),
+        _config_3bp(), FuenteDatos.HISTORICO,  # bp34_requiere_precio_sobre_ema21=False (default)
+    )
+    assert len(eventos) == 1
+    assert eventos[0].precio_sobre_ema21 is None  # propagado del detector, sin filtrar
+
+
 def test_caminar_dia_aplica_el_slippage_de_la_config(monkeypatch):
     # target = 12, entry = 10, stop_dist = 4: costo = 0.001 * (12 + 10) / 4 = 0.0055R
     eventos = walker_3bp._caminar_dia(

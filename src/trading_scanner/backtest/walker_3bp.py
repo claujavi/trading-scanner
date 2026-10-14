@@ -252,6 +252,8 @@ def _caminar_dia(
             continue
         if config.bp34_solo_tier_confirmado and evento.tier != "confirmado":
             continue  # ver ScanConfig.bp34_solo_tier_confirmado
+        if config.bp34_requiere_precio_sobre_ema21 and evento.precio_sobre_ema21 is not True:
+            continue  # ver ScanConfig.bp34_requiere_precio_sobre_ema21
 
         resultado, resultado_r, mfe_r, mae_r, tiempo = _resolver_entrada(
             velas_dia[i:], evento.entry, evento.stop, target_r, timeframe, config.slippage_bps
@@ -273,6 +275,7 @@ def _caminar_dia(
             mae_r=mae_r,
             tiempo_en_trade_minutos=tiempo,
             barra1_wrb_ratio=evento.barra1_wrb_ratio,
+            precio_sobre_ema21=evento.precio_sobre_ema21,
             config_snapshot=config_snapshot,
         ))
     return eventos

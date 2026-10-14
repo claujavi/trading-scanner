@@ -27,6 +27,13 @@ from ..models import ResultadoBp34
 # descarta (ver Detector3BP.procesar_barra).
 _GRUPO_MAX_BARRAS = 2
 
+# EMA21 propia del timeframe (ver EventoPatron3BP.precio_sobre_ema21) — misma
+# fórmula exacta que indicators/trend.py::calc_ema (close.ewm(span=21,
+# adjust=False).mean()), replicada de forma incremental O(1) por barra acá
+# en vez de recalcular toda la serie en cada llamada.
+_PERIODO_EMA21 = 21
+_ALPHA_EMA21 = 2.0 / (_PERIODO_EMA21 + 1)
+
 
 class Estado3BP(str, Enum):
     SIN_PATRON = "SIN_PATRON"
@@ -63,6 +70,21 @@ class EventoPatron3BP:
     # para análisis de calidad de señal (ver docs/backlog_mejoras_clasificador.md
     # y correlacion_3bp_calidad.py) — no participa de ninguna decisión del
     # propio detector.
+    precio_sobre_ema21: Optional[bool] = None
+    # Close de la barra gatillo > EMA21 propia del timeframe, calculada sobre
+    # TODAS las velas vistas (no solo las del patrón) — el "r21ema" del manual
+    # (Live Traders, cap. 3): aparece en todos los ejemplos de 3BP/4BP como
+    # referencia de sesgo de tendencia, aunque no está en la lista numerada de
+    # criterios. Validado con datos reales (2026-10-13, split-half en 15m y
+    # 5m): entradas con precio <= EMA21 dan expectancy fuertemente negativa
+    # (-0.42R a -0.66R, PF 0.25-0.53) en las 4 ventanas probadas — la señal
+    # más fuerte y consistente encontrada en todo el módulo hasta ahora. `None`
+    # si todavía no hay las 21 barras de contexto necesarias (criterio no
+    # calculable, no penaliza — mismo principio que el resto del sistema).
+    # Solo en ENTRADA. No participa de ninguna decisión del propio detector —
+    # el filtro real (ScanConfig.bp34_requiere_precio_sobre_ema21) se aplica
+    # afuera (walker_3bp.py / main.py), mismo patrón que bp34_stop_min_pct y
+    # bp34_solo_tier_confirmado.
 
 
 @dataclass
@@ -94,6 +116,13 @@ class Detector3BP:
     _barra1_atr14: Optional[float] = None
     _grupo: list[VelaPattern] = field(default_factory=list)
     _barras_en_estado2: int = 0
+    # EMA21 — se actualiza en CADA barra, independiente del estado del
+    # patrón (no se resetea con _reset(): es contexto de tendencia general
+    # del ticker, no parte del patrón en sí). _n_barras_ema21 cuenta cuántas
+    # barras ya se vieron, para no confiar en la EMA hasta que converja lo
+    # suficiente (mismo criterio conservador que atr14 con "< 2 barras").
+    _ema21: Optional[float] = None
+    _n_barras_ema21: int = 0
 
     def _registrar_rango_previo(self, vela: VelaPattern) -> None:
         self._rangos_previos.append(vela.high - vela.low)
@@ -143,6 +172,18 @@ class Detector3BP:
     def _invalida_por_estructura(self, vela: VelaPattern) -> bool:
         return vela.close < self._barra1.low
 
+    def _actualizar_ema21(self, vela: VelaPattern) -> None:
+        if self._ema21 is None:
+            self._ema21 = vela.close  # semilla, igual que ewm(adjust=False): y0 = x0
+        else:
+            self._ema21 = _ALPHA_EMA21 * vela.close + (1 - _ALPHA_EMA21) * self._ema21
+        self._n_barras_ema21 += 1
+
+    def _precio_sobre_ema21(self, vela: VelaPattern) -> Optional[bool]:
+        if self._n_barras_ema21 < _PERIODO_EMA21:
+            return None  # todavía no convergió lo suficiente — criterio no calculable
+        return vela.close > self._ema21
+
     def procesar_barra(
         self,
         vela: VelaPattern,
@@ -157,6 +198,7 @@ class Detector3BP:
         llega a evaluar una barra gatillo — sin él, el tier de esa
         entrada queda "sin_confirmar" por defecto (no bloquea la señal,
         ver spec: confirmación de volumen es opcional, no bloqueante)."""
+        self._actualizar_ema21(vela)
         evento: Optional[EventoPatron3BP] = None
 
         if self.estado == Estado3BP.SIN_PATRON:
@@ -224,6 +266,7 @@ class Detector3BP:
                     stop=stop,
                     tier=tier,
                     barra1_wrb_ratio=barra1_wrb_ratio,
+                    precio_sobre_ema21=self._precio_sobre_ema21(vela),
                 )
                 self._reset()
             elif self._bar_confirma_grupo(vela):

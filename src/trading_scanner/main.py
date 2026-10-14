@@ -145,6 +145,8 @@ async def lifespan(app: FastAPI):
                 return  # fuera de la ventana de sesión calibrada (bp34_entradas_solo_sesion_regular)
             if config.bp34_solo_tier_confirmado and evento.tier != "confirmado":
                 return  # ver ScanConfig.bp34_solo_tier_confirmado
+            if config.bp34_requiere_precio_sobre_ema21 and evento.precio_sobre_ema21 is not True:
+                return  # ver ScanConfig.bp34_requiere_precio_sobre_ema21
             target_r = getattr(config, f"bp34_target_r_{timeframe}")
             target = evento.entry + (evento.entry - evento.stop) * target_r
             evento_bp34 = Bp34Evento(
@@ -159,6 +161,7 @@ async def lifespan(app: FastAPI):
                 stop=evento.stop,
                 target=target,
                 barra1_wrb_ratio=evento.barra1_wrb_ratio,
+                precio_sobre_ema21=evento.precio_sobre_ema21,
                 config_snapshot=config.model_dump(mode="json"),
             )
             evento_id = await db.insert_bp34_evento(evento_bp34)
