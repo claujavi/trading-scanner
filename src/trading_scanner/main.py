@@ -274,6 +274,12 @@ async def lifespan(app: FastAPI):
         filesystem, no reprocesa lo que ya estaba en el disco)."""
         from .pipeline import run_pipeline
         config = await get_active_config()
+        # Refresca la config del cache ANTES de sembrar — ver el bug
+        # documentado en MarketDataCache.actualizar_config(): sin esto, un
+        # cambio guardado en /config o por el optimizador nunca llegaba a
+        # los tickers que se siembran a partir de ahora (seguían con la
+        # config vigente cuando arrancó el PROCESO, no la actual).
+        app.state.market_cache.actualizar_config(config)
         results = await run_pipeline(tickers, config, cache=app.state.market_cache)
         app.state.latest_results = results
 

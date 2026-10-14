@@ -69,6 +69,42 @@ def test_seed_pobla_estado_inicial():
     assert ticker_cache.min_dia == 10.0
 
 
+def test_actualizar_config_hace_que_seed_use_la_config_nueva():
+    """Bug real encontrado 2026-10-14: self._config se fijaba una sola vez
+    al construir el cache y nunca se volvia a tocar, asi que un servidor
+    corriendo varios dias seguia sembrando tickers nuevos con los bp34_*
+    de la config vigente cuando arranco el PROCESO, no la actual. Confirma
+    que seed() usa la config fresca despues de actualizar_config()."""
+    vieja = ScanConfig(bp34_wrb_multiplicador_15m=2.0)
+    nueva = ScanConfig(bp34_wrb_multiplicador_15m=5.0)
+    cache = MarketDataCache(vieja)
+
+    cache.actualizar_config(nueva)
+    cache.seed(
+        ticker_data=_ticker_data(),
+        df_5m=_EMPTY_DF, df_15m=_EMPTY_DF, df_4h=_EMPTY_DF, df_d=_EMPTY_DF,
+        signals={}, volumen_promedio=100_000.0, atr_pct=2.0, ivr=40.0,
+        warning=_warning_sin_catalizador(),
+    )
+
+    ticker_cache = cache.get("AAPL")
+    assert ticker_cache.detector_3bp_15m.wrb_multiplicador == 5.0
+
+
+def test_actualizar_config_no_toca_los_tickers_ya_sembrados():
+    """Un ticker sembrado ANTES del refresh conserva su Detector3BP tal
+    cual estaba -- mismo criterio que 'no reiniciar el stream ni
+    re-evaluar lo existente' del resto del sistema."""
+    vieja = ScanConfig(bp34_wrb_multiplicador_15m=2.0)
+    cache = _seed_cache(vieja)
+    detector_original = cache.get("AAPL").detector_3bp_15m
+
+    cache.actualizar_config(ScanConfig(bp34_wrb_multiplicador_15m=5.0))
+
+    assert cache.get("AAPL").detector_3bp_15m is detector_original
+    assert cache.get("AAPL").detector_3bp_15m.wrb_multiplicador == 2.0
+
+
 def test_actualizar_tick_detecta_cruce_de_vwap():
     config = ScanConfig()
     cache = _seed_cache(config)

@@ -600,6 +600,25 @@ más amplio la decisión de activar el filtro.
     ganadores de la Ronda 6 casi duplica la expectancy y el retorno de la cuenta de $300 en los dos
     timeframes, con drawdown a menos de la mitad y `P(perder)`→0% en el bootstrap. Activado en la
     config de producción (id=13) manteniendo los `bp34_*` de la Ronda 6.
+13. **[Pendiente futuro, no urgente] Cuando la cuenta crezca, evaluar escalar por DOS palancas
+    independientes, no solo una** — tickers de mayor valor Y más posiciones simultáneas, testeadas
+    por separado antes de combinarlas (para no tapar el efecto de una con el de la otra). Es un
+    trigger futuro ("cuando crezca"), no algo a resolver antes de salir en vivo con el tamaño actual:
+    - **Tickers de mayor valor:** ya cubierto por el punto 7 — el edge no está validado fuera de
+      <$20, hace falta precargar un universo caro/líquido y recalibrar `bp34_*` para ese régimen.
+    - **Más operaciones simultáneas:** más fácil de explorar de lo que parece, porque el límite de
+      "3 posiciones" usado en las simulaciones de cuenta (Rondas 3/4/6/7) es un parámetro del script
+      ad-hoc de simulación (`MAX_POS`, en el scratchpad, no versionado) — no algo enforced por
+      `ScanConfig.posiciones_simultaneas_max` en un motor de ejecución real (ese motor no existe
+      todavía, es Sprint 5). Evaluarlo es volver a correr el mismo script con `MAX_POS` más alto y
+      mirar drawdown/cola de riesgo — no requiere tocar código de producción ni esperar Sprint 5.
+    - **Nota regulatoria (2026-10-14):** FINRA eliminó la regla de Pattern Day Trader (y el piso de
+      $25.000 de equity) el 4 de junio de 2026 (enmienda a la Rule 4210) — reemplazada por un mínimo
+      estándar de cuenta de margen de ~$2.000 (depende del broker) y un framework de margen
+      intradiario en tiempo real, sin límite de cantidad de day trades por período. En cuenta cash
+      (sin margen) sigue aplicando el settlement T+1 y el riesgo de *good faith violation* al
+      reciclar capital intradía (3 GFV en 12 meses → restricción a fondos liquidados por 90 días en
+      Schwab) — relevante para el diseño de ejecución futura (Sprint 5), no para el scanner en sí.
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 

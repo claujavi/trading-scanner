@@ -234,11 +234,32 @@ def _categoria_relvol(relvol: Optional[float], config: ScanConfig) -> Optional[s
 
 
 class MarketDataCache:
-    """Dict en memoria {ticker: TickerCache}. Nunca persiste a Turso —
-    la config se recibe una sola vez al construir (no se re-lee de Turso
-    en cada tick; si el usuario cambia /config a mitad de sesión, el
-    cache sigue con la config vigente al momento de arrancar el stream,
-    consistente con que la config activa ya se fija por scan/proceso)."""
+    """Dict en memoria {ticker: TickerCache}. Nunca persiste a Turso.
+
+    La config se guarda en `self._config` y se usa en cada tick (ej.
+    `_categoria_relvol`, `detect_cruce_ema`) y al sembrar un ticker nuevo
+    (`seed()`, que construye sus `Detector3BP` con ella) — nunca se re-lee
+    de Turso sola, hay que empujarla con `actualizar_config()`.
+
+    **Bug real encontrado 2026-10-14:** hasta ahora `self._config` se fijaba
+    una sola vez al construir el objeto (en el arranque del proceso) y nunca
+    se volvía a tocar — aunque `pipeline.get_active_config()` sí trae la
+    config más reciente de Turso en CADA corrida del pipeline (pre-market
+    completo o descubrimiento incremental), esa config fresca nunca se
+    empujaba hacia el cache. Resultado: un servidor que lleva más de un día
+    corriendo sin reiniciarse sigue evaluando con los parámetros (incluidos
+    los `bp34_*` del detector 3BP/4BP) de la config que estaba activa
+    cuando arrancó el PROCESO, no la que está activa ahora — un cambio
+    guardado en `/config` o por el optimizador nunca llegaba al vivo sin
+    reiniciar el servidor entero. Fix: `main.py::_procesar_y_conectar_stream`
+    llama a `actualizar_config()` con la config fresca antes de cada
+    `run_pipeline()`, así que cada CSV nuevo (pre-market o incremental)
+    refresca `self._config` — los tickers que se siembran a partir de ahí
+    ya arrancan con los parámetros correctos. Los tickers YA sembrados antes
+    del refresh conservan su `Detector3BP` tal cual estaba (mismo criterio
+    que "no reiniciar el stream ni re-evaluar lo existente" del resto del
+    sistema) — solo las lecturas de `self._config` en caliente (relvol,
+    cruce EMA) se actualizan retroactivamente para ellos también."""
 
     def __init__(self, config: ScanConfig):
         self._config = config
@@ -255,6 +276,12 @@ class MarketDataCache:
         # ya estaban abiertas — misma cola/drenaje que _eventos_3bp_pendientes,
         # pero para el UPDATE en vez del INSERT (ver main.py::_on_resolucion_3bp).
         self._resoluciones_3bp_pendientes: list[tuple] = []
+
+    def actualizar_config(self, config: ScanConfig) -> None:
+        """Refresca la config que usa el cache de acá en adelante — ver el
+        bug documentado en el docstring de la clase. Llamar antes de sembrar
+        tickers nuevos (`seed()`) para que tomen los parámetros vigentes."""
+        self._config = config
 
     def drenar_eventos_3bp(self) -> list[tuple[str, str, EventoPatron3BP, Vela]]:
         """Devuelve y vacía la cola de eventos ENTRADA de 3BP/4BP acumulados
