@@ -3,6 +3,7 @@ from datetime import datetime
 
 from trading_scanner.fetchers.calendar_client import CalendarWarning
 from trading_scanner.fetchers.market_data_cache import MarketDataCache, Vela
+from trading_scanner.fetchers import schwab_stream
 from trading_scanner.fetchers.schwab_stream import BACKOFF_MAX_S, MockStreamManager, StreamManager
 from trading_scanner.models import ScanConfig, TickerBasico
 
@@ -175,6 +176,73 @@ def test_stream_manager_backoff_reintenta_con_espera_creciente():
         assert esperas_registradas[1] >= esperas_registradas[0] * 0.9
         assert all(e <= BACKOFF_MAX_S * 1.2 for e in esperas_registradas)
         assert mgr._intentos_reconexion >= 2
+
+    asyncio.run(body())
+
+
+def test_stream_manager_handle_message_colgado_dispara_reconexion():
+    """Bug real encontrado 2026-10-19: sin timeout, un handle_message() que
+    nunca retorna (conexión que no cae pero tampoco responde) bloqueaba el
+    loop de reconexión PARA SIEMPRE — el servidor quedaba 'conectado: false'
+    sin volver a intentar ni loguear nada (confirmado: el stream real dejó
+    de reconectar el 2026-10-18 y nunca se recuperó solo). Este test fuerza
+    exactamente ese escenario (login ok, handle_message que jamás resuelve)
+    con el timeout bajado a algo chico, y confirma que SÍ dispara el backoff
+    en vez de colgarse."""
+    async def body():
+        async def on_evento(ticker: str):
+            pass
+
+        esperas_registradas = []
+
+        async def sleep_falso(segundos):
+            esperas_registradas.append(segundos)
+            mgr._stop_solicitado = True
+            raise asyncio.CancelledError()
+
+        cache = _cache_con_ticker()
+        mgr = StreamManager(cache, on_evento)
+
+        class _ClienteFalso:
+            async def login(self):
+                pass
+
+            async def logout(self):
+                pass
+
+            async def handle_message(self):
+                await asyncio.Event().wait()  # nunca retorna por sí solo
+
+            def add_level_one_equity_handler(self, handler):
+                pass
+
+            def add_chart_equity_handler(self, handler):
+                pass
+
+        async def _resuscribir_noop():
+            pass
+
+        mgr._crear_stream_client = lambda: _ClienteFalso()
+        mgr._resuscribir_todo = _resuscribir_noop
+
+        orig_sleep = asyncio.sleep
+        orig_timeout = schwab_stream.MENSAJE_TIMEOUT_S
+        asyncio.sleep = sleep_falso
+        schwab_stream.MENSAJE_TIMEOUT_S = 0.01
+        try:
+            await mgr._run_con_reconexion()
+        except asyncio.CancelledError:
+            pass
+        finally:
+            asyncio.sleep = orig_sleep
+            schwab_stream.MENSAJE_TIMEOUT_S = orig_timeout
+
+        # Se conectó (login ok) pero el handle_message colgado disparó el
+        # timeout -> excepción -> backoff, en vez de quedarse esperando para
+        # siempre con conectado=True.
+        assert len(esperas_registradas) >= 1
+        assert mgr._conectado is False
+        assert mgr._intentos_reconexion >= 1
 
     asyncio.run(body())
 

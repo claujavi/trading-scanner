@@ -36,6 +36,21 @@ from .schwab_client import get_client
 BACKOFF_BASE_S = 2.0
 BACKOFF_MAX_S = 60.0
 BACKOFF_JITTER = 0.2
+# Timeouts del loop de reconexión — ver bug real encontrado 2026-10-19:
+# ni login() ni handle_message() tenían timeout, así que un colgado de red
+# (la conexión no cae del todo pero tampoco responde — distinto de un
+# error inmediato, que sí dispara el backoff normal) bloqueaba el loop de
+# reconexión PARA SIEMPRE en un solo await, sin más logs ni reintentos.
+# Confirmado en el servidor real: dejó de loguear "Stream desconectado" el
+# 2026-10-18 ~01:32 y siguió "conectado": false sin recuperarse hasta que
+# alguien reinicie el proceso a mano — 3 días sin ninguna señal 3BP/4BP ni
+# reevaluación por streaming, aunque el REST (token, scans) seguía ON_LINE.
+LOGIN_TIMEOUT_S = 30.0
+# Si no llega NINGÚN mensaje (quote, vela, heartbeat del propio protocolo
+# de Schwab) en esta ventana, se trata como desconexión y se fuerza un
+# reintento — en operación normal nunca se llega a este timeout, cada
+# handle_message() vuelve en segundos.
+MENSAJE_TIMEOUT_S = 120.0
 
 OnEventoSignificativo = Callable[[str], Awaitable[None]]
 OnEvento3BP = Callable[[str, str, EventoPatron3BP, Vela], Awaitable[None]]
@@ -193,7 +208,7 @@ class StreamManager(BaseStreamManager):
                 self._stream_client = self._crear_stream_client()
                 self._stream_client.add_level_one_equity_handler(self._on_level_one)
                 self._stream_client.add_chart_equity_handler(self._on_chart_equity)
-                await self._stream_client.login()
+                await asyncio.wait_for(self._stream_client.login(), timeout=LOGIN_TIMEOUT_S)
                 await self._resuscribir_todo()
                 self._conectado = True
                 self._intentos_reconexion = 0
@@ -201,7 +216,7 @@ class StreamManager(BaseStreamManager):
                     f"[green]Stream iniciado: {len(self._cache.tickers_suscritos())} tickers suscritos[/green]"
                 )
                 while not self._stop_solicitado:
-                    await self._stream_client.handle_message()
+                    await asyncio.wait_for(self._stream_client.handle_message(), timeout=MENSAJE_TIMEOUT_S)
             except Exception as exc:
                 if self._stop_solicitado:
                     break
