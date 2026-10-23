@@ -273,6 +273,27 @@ async def lifespan(app: FastAPI):
         que llegue un CSV nuevo — el watcher solo dispara con eventos de
         filesystem, no reprocesa lo que ya estaba en el disco)."""
         from .pipeline import run_pipeline
+
+        # Bug real encontrado 2026-10-23: CLAUDE.md documenta "los tickers
+        # ya suscritos no se tocan" para el descubrimiento incremental,
+        # pero nunca se implementó ese filtro — un segundo CSV que
+        # reincluye tickers de un CSV anterior (lo normal: en ToS se
+        # exporta "todo lo que está en pantalla ahora", no solo lo nuevo)
+        # los volvía a sembrar desde cero, pisando el TickerCache entero
+        # (incluido el Detector3BP — barra1/grupo en progreso y el conteo
+        # de barras hacia el EMA21 se perdían) y gastando llamadas REST de
+        # más. Filtrar acá cubre tanto al CSV watcher como a /stream/start.
+        nuevos = [t for t in tickers if not app.state.market_cache.tiene(t.ticker)]
+        ya_suscritos = len(tickers) - len(nuevos)
+        if ya_suscritos:
+            console.log(
+                f"[blue]{ya_suscritos} ticker(s) ya suscritos, sin re-sembrar "
+                f"(conservan su estado) — {len(nuevos)} nuevo(s) de {len(tickers)}[/blue]"
+            )
+        if not nuevos:
+            return
+        tickers = nuevos
+
         config = await get_active_config()
         # Refresca la config del cache ANTES de sembrar — ver el bug
         # documentado en MarketDataCache.actualizar_config(): sin esto, un
