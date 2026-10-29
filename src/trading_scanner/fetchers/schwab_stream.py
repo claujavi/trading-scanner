@@ -200,12 +200,60 @@ class StreamManager(BaseStreamManager):
 
     async def start(self, tickers: list[str]) -> None:
         self._stop_solicitado = False
-        self._task = asyncio.create_task(self._run_con_reconexion())
+        self._task = asyncio.create_task(self._supervisar_reconexion())
+
+    async def _supervisar_reconexion(self) -> None:
+        """Red de seguridad sobre `_run_con_reconexion()`. Bug real
+        encontrado 2026-10-29: ni el backoff normal (`except Exception`)
+        ni el timeout de login()/handle_message() (fix del 2026-10-19)
+        alcanzaron — el stream quedó muerto **6+ horas sin loguear nada**
+        (ni un solo "Stream desconectado") hasta que alguien reinició el
+        servidor entero. La causa exacta no se pudo confirmar (candidata:
+        algo dentro de `get_client()`/`client_from_token_file()` — es
+        sincrónico, sin ningún timeout cubriéndolo — que escapa un
+        `BaseException` que no es subclase de `Exception`, matando el
+        Task sin que nuestro except lo vea). En vez de seguir
+        persiguiendo la causa exacta, esto es una red de seguridad: si
+        `_run_con_reconexion()` alguna vez termina por CUALQUIER motivo
+        que no sea `stop()`, se loguea bien visible (con el tipo de
+        excepción, para diagnosticar la próxima vez que pase) y se
+        relanza desde cero — nunca debería quedar colgado para siempre
+        sin que algo, al menos, lo intente de nuevo."""
+        while not self._stop_solicitado:
+            try:
+                await self._run_con_reconexion()
+            except asyncio.CancelledError:
+                raise
+            except BaseException as exc:
+                if self._stop_solicitado:
+                    break
+                console.log(
+                    f"[red]Stream: _run_con_reconexion() murió de forma inesperada "
+                    f"({type(exc).__name__}: {exc}) — el supervisor la relanza[/red]"
+                )
+            else:
+                if self._stop_solicitado:
+                    break
+                console.log(
+                    "[red]Stream: _run_con_reconexion() retornó sin error "
+                    "(no debería pasar nunca) — el supervisor la relanza[/red]"
+                )
+            self._conectado = False
+            await asyncio.sleep(5.0)
 
     async def _run_con_reconexion(self) -> None:
         while not self._stop_solicitado:
             try:
-                self._stream_client = self._crear_stream_client()
+                # _crear_stream_client() es sincrónico y puede hacer I/O de
+                # red por dentro (get_client() -> client_from_token_file(),
+                # que puede refrescar el access token) sin ningún timeout
+                # propio — correrlo en un thread aparte evita que un colgado
+                # ahí bloquee el event loop entero (congelaría TODO el
+                # proceso, no solo el stream) y permite acotarlo igual que
+                # login()/handle_message().
+                self._stream_client = await asyncio.wait_for(
+                    asyncio.to_thread(self._crear_stream_client), timeout=LOGIN_TIMEOUT_S
+                )
                 self._stream_client.add_level_one_equity_handler(self._on_level_one)
                 self._stream_client.add_chart_equity_handler(self._on_chart_equity)
                 await asyncio.wait_for(self._stream_client.login(), timeout=LOGIN_TIMEOUT_S)

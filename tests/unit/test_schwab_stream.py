@@ -180,6 +180,78 @@ def test_stream_manager_backoff_reintenta_con_espera_creciente():
     asyncio.run(body())
 
 
+def test_supervisor_relanza_si_run_con_reconexion_muere_de_forma_inesperada():
+    """Red de seguridad agregada 2026-10-29: el stream real quedó 6+ horas
+    sin loguear absolutamente nada (ni un 'Stream desconectado' más) hasta
+    que alguien reinició el servidor entero — _run_con_reconexion() murió
+    por completo, escapando incluso el backoff normal (`except Exception`).
+    Causa exacta no confirmada (candidata: algo dentro de
+    get_client()/client_from_token_file() que escapa un BaseException que
+    no es subclase de Exception), pero el supervisor no debería depender
+    de adivinarla: si _run_con_reconexion() termina por CUALQUIER motivo
+    que no sea stop(), debe relanzarla."""
+    async def body():
+        async def on_evento(ticker: str):
+            pass
+
+        cache = _cache_con_ticker()
+        mgr = StreamManager(cache, on_evento)
+
+        llamadas = []
+
+        class _EscapaException(BaseException):
+            pass
+
+        async def _run_falso():
+            llamadas.append(1)
+            if len(llamadas) >= 2:
+                mgr._stop_solicitado = True
+                return  # segunda vez: termina "limpio" (tampoco debería pasar)
+            raise _EscapaException("algo que no es subclase de Exception")
+
+        async def sleep_falso(segundos):
+            pass  # no esperar de verdad en el test
+
+        mgr._run_con_reconexion = _run_falso
+
+        orig_sleep = asyncio.sleep
+        asyncio.sleep = sleep_falso
+        try:
+            await mgr._supervisar_reconexion()
+        finally:
+            asyncio.sleep = orig_sleep
+
+        assert len(llamadas) == 2  # se relanzó después de la excepción
+        assert mgr._conectado is False
+
+    asyncio.run(body())
+
+
+def test_supervisor_no_atrapa_cancelacion_real():
+    """stop() cancela self._task -- la CancelledError tiene que seguir
+    propagándose para que el shutdown funcione, no quedar atrapada como
+    si fuera un error más a relanzar."""
+    async def body():
+        async def on_evento(ticker: str):
+            pass
+
+        cache = _cache_con_ticker()
+        mgr = StreamManager(cache, on_evento)
+
+        async def _run_cancelado():
+            raise asyncio.CancelledError()
+
+        mgr._run_con_reconexion = _run_cancelado
+
+        try:
+            await mgr._supervisar_reconexion()
+            assert False, "debería haber propagado CancelledError"
+        except asyncio.CancelledError:
+            pass
+
+    asyncio.run(body())
+
+
 def test_stream_manager_handle_message_colgado_dispara_reconexion():
     """Bug real encontrado 2026-10-19: sin timeout, un handle_message() que
     nunca retorna (conexión que no cae pero tampoco responde) bloqueaba el
