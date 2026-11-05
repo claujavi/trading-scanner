@@ -1,4 +1,4 @@
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import polars as pl
 import pytest
@@ -56,6 +56,55 @@ def _seed_cache(config: ScanConfig, volumen_promedio=100_000.0) -> MarketDataCac
         warning=_warning_sin_catalizador(),
     )
     return cache
+
+
+def _df_historico(n: int, close: float = 5.0, paso_minutos: int = 15) -> pl.DataFrame:
+    base = datetime(2026, 1, 2, 4, 0)  # pre-market, como vendría de Schwab
+    timestamps = [base + timedelta(minutes=paso_minutos * i) for i in range(n)]
+    return pl.DataFrame({
+        "timestamp": timestamps,
+        "open": [close] * n, "high": [close] * n, "low": [close] * n, "close": [close] * n,
+        "volume": [10_000.0] * n,
+    })
+
+
+def test_seed_precalienta_el_detector_3bp_con_el_historial_ya_descargado():
+    """Bug real encontrado 2026-11-05: más de 3 semanas de stream en vivo
+    funcionando, cero eventos 3BP/4BP registrados. precio_sobre_ema21
+    necesita 21 llamadas a procesar_barra() -- que sin precalentar solo
+    empiezan a ocurrir con velas EN VIVO, nunca llegando a las 21 dentro
+    de bp34_ventana_entrada_minutos para ningún timeframe. Confirma que
+    seed() deja al detector con el contexto EMA21 ya listo usando el
+    historial que process_ticker() ya trajo por REST."""
+    config = ScanConfig()
+    cache = MarketDataCache(config)
+    cache.seed(
+        ticker_data=_ticker_data(),
+        df_5m=_df_historico(25, paso_minutos=5),
+        df_15m=_df_historico(25, paso_minutos=15),
+        df_4h=_EMPTY_DF, df_d=_EMPTY_DF,
+        signals={}, volumen_promedio=100_000.0, atr_pct=2.0, ivr=40.0,
+        warning=_warning_sin_catalizador(),
+    )
+
+    ticker_cache = cache.get("AAPL")
+    assert ticker_cache.detector_3bp_5m._n_barras_ema21 >= 21
+    assert ticker_cache.detector_3bp_15m._n_barras_ema21 >= 21
+    # La serie EN VIVO (velas_3bp_5m/_15m) queda vacía a propósito -- el
+    # precalentamiento no la toca, solo el estado interno del detector.
+    assert ticker_cache.velas_3bp_5m == []
+    assert ticker_cache.velas_3bp_15m == []
+
+
+def test_seed_sin_historial_no_precalienta_nada():
+    """Con df vacío (MOCK_SCHWAB o Schwab sin datos), el detector arranca
+    frío como siempre -- no debe romper ni simular contexto que no existe."""
+    config = ScanConfig()
+    cache = _seed_cache(config)
+
+    ticker_cache = cache.get("AAPL")
+    assert ticker_cache.detector_3bp_5m._n_barras_ema21 == 0
+    assert ticker_cache.detector_3bp_15m._n_barras_ema21 == 0
 
 
 def test_seed_pobla_estado_inicial():

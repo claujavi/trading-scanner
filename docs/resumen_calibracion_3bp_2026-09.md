@@ -560,6 +560,62 @@ más amplio la decisión de activar el filtro.
 
 ---
 
+## Ronda 8 (2026-11-05) — bug real: el filtro EMA21 era IMPOSIBLE de satisfacer en vivo
+
+### El síntoma
+
+Más de 3 semanas de stream en vivo funcionando normalmente (conexión Schwab, ticks reales,
+reevaluaciones del clasificador de 6 criterios) y **cero eventos 3BP/4BP registrados**, en ningún
+timeframe, ningún día. Antes de este hallazgo se investigaron (y confirmaron, y corrigieron) dos
+problemas reales de conectividad del stream (ver más abajo en el historial de commits) — pero una
+vez el stream quedó confirmado conectado y recibiendo ticks reales, el síntoma seguía igual: nunca
+un solo evento. Eso apuntaba a algo estructural del módulo 3BP en sí, no de la conexión.
+
+### La causa
+
+`precio_sobre_ema21` (el filtro de la Ronda 7) necesita 21 llamadas a `Detector3BP.procesar_barra()`
+para que la EMA21 converja (`_n_barras_ema21 >= 21`). En vivo, `market_data_cache.py::_procesar_3bp`
+alimenta al detector **solo con velas bucketeadas de los ticks del stream**, arrancando de una
+lista vacía (`cache.velas_3bp_5m`/`_15m = []`) en cada `seed()` — sin ningún precalentamiento con
+el historial que `process_ticker()` **ya descarga por REST** para el clasificador de 6 criterios
+(`df_5m`/`df_15m`). Eso significa que el detector arranca frío cada mañana y necesita 21 velas
+**ya cerradas EN VIVO** antes de que el filtro pueda calcularse — unos 21×15min = **5.25 horas**
+para 15m y 21×5min = **1h45** para 5m. Comparado contra `bp34_ventana_entrada_minutos=90` (que
+limita las entradas aceptadas a los primeros 90 minutos de sesión regular, 9:30-11:00 NY): **ningún
+timeframe llega a tener el contexto EMA21 listo dentro de la ventana de entrada permitida.** Con
+`bp34_requiere_precio_sobre_ema21=True` activo en producción desde la Ronda 7, cualquier ENTRADA
+real que el patrón generara iba a ser descartada siempre por el filtro — no por falta de patrón,
+sino porque el dato nunca llegaba a estar disponible a tiempo.
+
+El backtest (`walker_3bp.py`) nunca tuvo este problema: camina el historial completo de cada día
+(con de sobra más de 21 velas de contexto antes de que empiece a evaluar entradas), así que todas
+las cifras de la Ronda 7 (expectancy, PF, la simulación de cuenta) siguen siendo válidas como
+medición — el problema era específico del camino en vivo, nunca tocado por el backtest.
+
+### El fix
+
+`MarketDataCache.seed()` ahora precalienta cada `Detector3BP` (5m y 15m) caminándolo a través del
+`df_5m`/`df_15m` que `process_ticker()` ya trajo por REST (`_precalentar_detector_3bp()`) —
+**sin disparar ninguna llamada de red nueva**. Deliberadamente NO toca `cache.velas_3bp_5m`/`_15m`
+(quedan vacías, como antes): esa serie es la que bucketea los ticks en vivo desde cero cada mañana,
+y mezclarla con velas históricas rompería la detección de "se cerró un bucket nuevo" en el primer
+tick del día — solo se precalienta el **estado interno del detector** (EMA21, y de paso cualquier
+patrón 3BP/4BP que ya estuviera en curso al cierre de la última vela histórica, igual que pasa en
+backtest entre barras consecutivas). Con los defaults de `ScanConfig` (`velas_5m=78`, `velas_15m=100`,
+ambos muy por encima de las 21 necesarias), el contexto EMA21 queda listo desde el primer tick real
+de la mañana, para cualquier ticker con historial normal.
+
+Tests nuevos en `test_market_data_cache.py`: confirma que `seed()` con historial real deja
+`_n_barras_ema21 >= 21` en los dos detectores, que sin historial (`MOCK_SCHWAB` o Schwab sin datos)
+no rompe ni simula contexto que no existe, y que `velas_3bp_5m`/`_15m` quedan vacías a propósito.
+Suite completa: 293 tests, 0 fallos.
+
+**Pendiente de esta ronda:** confirmar en vivo que ahora sí aparecen eventos (`bp34_eventos`,
+`fuente='LIVE'`) cuando el patrón ocurra — este fix resuelve la causa estructural, pero todavía no
+hay una confirmación end-to-end con un evento real disparado después del fix.
+
+---
+
 ## Qué falta antes de operar esto en serio
 
 1. ~~El vivo no filtra por horario todavía~~ — **resuelto** (`evento_en_ventana_permitida` en
@@ -619,6 +675,11 @@ más amplio la decisión de activar el filtro.
       (sin margen) sigue aplicando el settlement T+1 y el riesgo de *good faith violation* al
       reciclar capital intradía (3 GFV en 12 meses → restricción a fondos liquidados por 90 días en
       Schwab) — relevante para el diseño de ejecución futura (Sprint 5), no para el scanner en sí.
+14. **[Ronda 8] Precalentamiento del detector implementado, sin confirmación end-to-end en vivo
+    todavía.** El fix (`MarketDataCache._precalentar_detector_3bp`) está testeado a nivel unitario,
+    pero no hay todavía un evento LIVE real confirmado disparando después del fix — revisar
+    `bp34_eventos` (`fuente='LIVE'`) pasados unos días de operación para confirmar que efectivamente
+    empiezan a aparecer señales.
 
 ## Scripts usados (no versionados, en el scratchpad de la sesión — no en el repo)
 

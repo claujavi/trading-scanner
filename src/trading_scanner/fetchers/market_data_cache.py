@@ -379,7 +379,52 @@ class MarketDataCache:
         cache.relvol_categoria = _categoria_relvol(self._relvol_actual(cache), self._config)
         cache.detector_3bp_5m = _crear_detector_3bp(self._config, "5m")
         cache.detector_3bp_15m = _crear_detector_3bp(self._config, "15m")
+        # Precalienta el detector con el historial que process_ticker() ya
+        # trajo por REST para el clasificador de 6 criterios — no dispara
+        # ninguna llamada de red nueva. Ver _precalentar_detector_3bp():
+        # bug real encontrado 2026-11-05, sin esto el filtro EMA21
+        # (bp34_requiere_precio_sobre_ema21) era IMPOSIBLE de satisfacer en
+        # vivo dentro de la ventana de entrada configurada.
+        self._precalentar_detector_3bp(cache.detector_3bp_5m, df_5m)
+        self._precalentar_detector_3bp(cache.detector_3bp_15m, df_15m)
         self._tickers[ticker] = cache
+
+    def _precalentar_detector_3bp(self, detector: Optional[Detector3BP], df_historico: pl.DataFrame) -> None:
+        """Camina el detector a través del historial ya descargado (velas
+        5m/15m que `process_ticker()` ya trajo para el clasificador de 6
+        criterios) para que el contexto de ATR14/EMA21 (y cualquier patrón
+        3BP/4BP ya en curso al cierre de la última vela) esté listo desde
+        el primer tick en vivo, en vez de arrancar frío cada mañana.
+
+        Bug real encontrado 2026-11-05 (más de 3 semanas de stream en vivo
+        funcionando, cero eventos 3BP/4BP registrados): `precio_sobre_ema21`
+        necesita 21 llamadas a `procesar_barra()`, que a su vez no empiezan
+        hasta que `_atr14_de_velas` tiene ≥2 barras — 22 barras en total de
+        CONTEXTO EN VIVO antes de que el filtro pueda calcularse. Eso son
+        ~5.5h para 15m y ~1h50 para 5m — más que `bp34_ventana_entrada_
+        minutos=90` permite para CUALQUIER timeframe. Con
+        `bp34_requiere_precio_sobre_ema21=True` (Ronda 7), ningún evento
+        LIVE podía pasar el filtro nunca, sin importar que el patrón
+        apareciera — el backtest (`walker_3bp.py`) nunca tuvo este
+        problema porque camina el historial completo de cada día, con de
+        sobra más de 22 barras de contexto antes de la ventana de entrada.
+
+        Solo precalienta el detector en sí (ATR14/EMA21/estado del patrón)
+        — deliberadamente NO toca `cache.velas_3bp_5m`/`_15m` (quedan
+        vacías): esa serie es la que bucketea los ticks EN VIVO desde cero
+        cada mañana (`_actualizar_bucket`), y mezclarla con velas
+        históricas rompería la detección de "se cerró un bucket nuevo" en
+        el primer tick del día. Los eventos ENTRADA que el precalentamiento
+        pueda generar se descartan a propósito — es historial, no una señal
+        de hoy."""
+        if detector is None or df_historico.is_empty():
+            return
+        contexto: list[Vela] = []
+        for vela in _df_a_velas(df_historico):
+            contexto.append(vela)
+            atr14 = _atr14_de_velas(contexto)
+            volumen_promedio = _volumen_promedio_de_velas(contexto)
+            detector.procesar_barra(_a_vela_pattern(vela), atr14, volumen_promedio)
 
     def actualizar_tick(
         self,
